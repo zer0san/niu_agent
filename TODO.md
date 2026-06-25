@@ -24,3 +24,5 @@ B4:
   "max_turns": 3, (最大轮数)
   "save_memory": "conversation" (存储本轮对话记忆，类型：对话)
 }
+
+**注意，如果是单条消息，使用user_input；如果是多条消息，使用user_inputs**
