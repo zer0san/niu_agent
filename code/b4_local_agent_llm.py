@@ -13,11 +13,12 @@ from common.logging_utils import now_iso
 from common.path_utils import resolve_cli_path, resolve_from_file
 from common.schemas import make_ai_message, validate_ai_message, validate_messages
 
-
+# 当模型输出无法解析时使用的默认错误内容
 PARSE_ERROR_CONTENT = "模型输出解析失败，无法生成有效工具调用或最终回答。"
+# 全局模型缓存，避免重复加载模型，键是模型配置的元组，值是(tokenizer, model)元组
 _MODEL_CACHE: dict[tuple[str, ...], tuple[Any, Any]] = {}
 
-
+# 加载并验证模型配置文件
 def _load_model_config(model_config: str | Path) -> tuple[Path, dict]:
     path = Path(model_config).resolve()
     config = read_yaml(path)
@@ -25,7 +26,7 @@ def _load_model_config(model_config: str | Path) -> tuple[Path, dict]:
         raise ValueError("model.yaml must contain an object")
     return path, config
 
-
+# 生成模型推理产物的文件路径
 def _artifact_paths(artifact_dir: str | Path, stem: str | None) -> tuple[Path, Path, Path]:
     directory = Path(artifact_dir)
     prefix = f"{stem}_" if stem else ""
@@ -35,7 +36,7 @@ def _artifact_paths(artifact_dir: str | Path, stem: str | None) -> tuple[Path, P
         directory / "llm_run_log.jsonl",
     )
 
-
+# 从工具消息中提取工具执行结果
 def _extract_tool_result(message: dict) -> dict:
     try:
         result = json.loads(message["content"])
@@ -45,7 +46,7 @@ def _extract_tool_result(message: dict) -> dict:
         raise ValueError("ToolMessage content must decode to an object")
     return result
 
-
+# 从工具结果中提取三条中文要点
 def _three_points(text: str) -> list[str]:
     parts = [part.strip(" \t\r\n。") for part in re.split(r"\n+|(?<=[。！？!?])", text) if part.strip()]
     points = []
@@ -58,9 +59,10 @@ def _three_points(text: str) -> list[str]:
         points.append("工具结果未提供更多可提取内容")
     return points
 
-
+# Mock模式的核心生成逻辑
 def _mock_generate(messages: list[dict]) -> dict:
     tool_messages = [message for message in messages if message.get("role") == "tool"]
+    # 没有工具消息，模拟调用file_reader工具读取文件
     if not tool_messages:
         return make_ai_message(
             "",
@@ -72,12 +74,15 @@ def _mock_generate(messages: list[dict]) -> dict:
                 }
             ],
         )
+    # 解析工具结果并生成总结
     latest = tool_messages[-1]
     result = _extract_tool_result(latest)
+    # 工具调用失败
     if latest.get("status") != "success" or result.get("status") != "success":
         error = result.get("error") or {}
         detail = error.get("message", "未知工具错误") if isinstance(error, dict) else str(error)
         return make_ai_message(f"工具调用失败，无法完成请求：{detail}", [])
+    # 成功，提取三条要点
     output = result.get("output") or {}
     content = output.get("content") if isinstance(output, dict) else None
     if not isinstance(content, str) or not content.strip():
@@ -86,7 +91,7 @@ def _mock_generate(messages: list[dict]) -> dict:
     answer = "三条中文要点如下：\n" + "\n".join(f"{index}. {point}" for index, point in enumerate(points, 1))
     return make_ai_message(answer, [])
 
-
+# 模型输出解析，将模型的原始输出解析为AIMessage格式
 def _parse_tool_calls_fragment(raw_text: str, original_error: json.JSONDecodeError) -> dict:
     markers = ['"tool_calls":[', '\\"tool_calls\\":[']
     marker_index = -1
@@ -111,7 +116,7 @@ def _parse_tool_calls_fragment(raw_text: str, original_error: json.JSONDecodeErr
         raise original_error
     return {"content": "", "tool_calls": tool_calls}
 
-
+# 处理尾部多余的反引号
 def _parse_json_with_backtick_tail(raw_text: str, original_error: json.JSONDecodeError) -> dict:
     text = raw_text.strip()
     try:
@@ -123,7 +128,7 @@ def _parse_json_with_backtick_tail(raw_text: str, original_error: json.JSONDecod
         return candidate
     raise original_error
 
-
+# 将解析后的候选对象转换为标准AIMessage
 def _candidate_to_message(candidate: dict) -> tuple[dict, dict]:
     if not isinstance(candidate, dict):
         raise ValueError("model output JSON must be an object")
@@ -144,7 +149,7 @@ def _candidate_to_message(candidate: dict) -> tuple[dict, dict]:
     parsed_candidate = {"content": message["content"], "tool_calls": message["tool_calls"]}
     return parsed_candidate, message
 
-
+# 组合多种解析策略
 def _parse_model_output(raw_text: str) -> tuple[dict, dict]:
     try:
         candidate = json.loads(raw_text.strip())
@@ -155,7 +160,7 @@ def _parse_model_output(raw_text: str) -> tuple[dict, dict]:
             candidate = _parse_tool_calls_fragment(raw_text, exc)
     return _candidate_to_message(candidate)
 
-
+# 将字符串类型的dtype转换为对应的torch.dtype
 def _dtype_value(torch_module: Any, configured: str) -> Any:
     if configured == "auto":
         return "auto"
@@ -168,7 +173,7 @@ def _dtype_value(torch_module: Any, configured: str) -> Any:
         raise ValueError(f"unsupported torch_dtype: {configured}")
     return mapping[configured]
 
-
+# 生成模型缓存的唯一键
 def _model_cache_key(
     model_path: Path,
     tokenizer_path: Path,
@@ -196,7 +201,7 @@ def _model_cache_key(
         max_memory_key,
     )
 
-
+# 带缓存的模型加载
 def _load_model_bundle(
     auto_model: Any,
     auto_tokenizer: Any,
@@ -239,7 +244,7 @@ def _load_model_bundle(
     _MODEL_CACHE[cache_key] = (tokenizer, model)
     return tokenizer, model
 
-
+# 构建发送给LLM的完整提示
 def _build_prompt_messages(messages: list[dict], tools_schema: list[dict]) -> list[dict]:
     prompt_messages = deepcopy(messages)
     format_instruction = (
@@ -274,15 +279,17 @@ def _build_prompt_messages(messages: list[dict], tools_schema: list[dict]) -> li
         + "\n"
         + format_instruction
     )
+    # 将系统指令追加到第一条system消息
     if prompt_messages and prompt_messages[0].get("role") == "system":
         prompt_messages[0]["content"] += system_instruction
     else:
         prompt_messages.insert(0, {"role": "system", "content": system_instruction.strip()})
-
+    # 将信封提醒追加到最后一条user消息
     for message in reversed(prompt_messages):
         if message.get("role") == "user":
             message["content"] += "\n\n" + envelope_reminder
             break
+    # 如果最后一条消息是tool消息，追加引导提醒
     if prompt_messages[-1].get("role") == "tool":
         prompt_messages.append(
             {
@@ -297,19 +304,21 @@ def _build_prompt_messages(messages: list[dict], tools_schema: list[dict]) -> li
         )
     return prompt_messages
 
-
+# 调用本地模型进行推理
 def _prompt_json_generate(config_path: Path, config: dict, messages: list[dict], tools_schema: list[dict]) -> str:
     try:
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer
     except ImportError as exc:
         raise RuntimeError("prompt_json mode requires requirements-llm.txt") from exc
+    # 读取配置
     model_config = config.get("model", {})
     generation_config = config.get("generation", {})
     model_setting = model_config.get("model_name_or_path")
     tokenizer_setting = model_config.get("tokenizer_name_or_path", model_setting)
     if not isinstance(model_setting, str) or not isinstance(tokenizer_setting, str):
         raise ValueError("model_name_or_path and tokenizer_name_or_path are required")
+    # 路径解析    
     model_path = resolve_from_file(model_setting, config_path)
     tokenizer_path = resolve_from_file(tokenizer_setting, config_path)
     if not model_path.exists() or not tokenizer_path.exists():
@@ -317,6 +326,7 @@ def _prompt_json_generate(config_path: Path, config: dict, messages: list[dict],
     local_only = bool(model_config.get("local_files_only", True))
     trust_remote_code = bool(model_config.get("trust_remote_code", False))
     dtype = _dtype_value(torch, str(model_config.get("torch_dtype", "auto")))
+    # 加载模型
     tokenizer, model = _load_model_bundle(
         AutoModelForCausalLM,
         AutoTokenizer,
@@ -328,7 +338,9 @@ def _prompt_json_generate(config_path: Path, config: dict, messages: list[dict],
         model_config.get("device_map", "auto"),
         model_config.get("max_memory"),
     )
+    # 构建提示
     prompt_messages = _build_prompt_messages(messages, tools_schema)
+    # 编码提示
     inputs = tokenizer.apply_chat_template(
         prompt_messages,
         tokenize=True,
@@ -337,6 +349,7 @@ def _prompt_json_generate(config_path: Path, config: dict, messages: list[dict],
         return_dict=True,
         enable_thinking=False,
     )
+    # 推理
     device = next(model.parameters()).device
     inputs = inputs.to(device)
     input_length = inputs["input_ids"].shape[-1]
@@ -346,10 +359,11 @@ def _prompt_json_generate(config_path: Path, config: dict, messages: list[dict],
     }
     with torch.no_grad():
         generated = model.generate(**inputs, **options)
+    # 解码输出
     new_tokens = generated[0][input_length:]
     return tokenizer.decode(new_tokens, skip_special_tokens=True)
 
-
+# 核心函数
 def generate_ai_message(
     model_config: str,
     messages: list[dict],
@@ -358,10 +372,12 @@ def generate_ai_message(
     artifact_dir: str | None = None,
     artifact_stem: str | None = None,
 ) -> dict:
+    # 加载模型配置
     config_path, config = _load_model_config(model_config)
     messages = validate_messages(deepcopy(messages))
     if not isinstance(tools_schema, list):
         raise ValueError("tools_schema must be an array")
+    # 根据模式生成    
     generated_at = now_iso()
     backend = "mock" if mode == "mock" else config.get("model", {}).get("backend", "transformers")
     if mode == "mock":
@@ -371,6 +387,7 @@ def generate_ai_message(
         status = "success"
         error = None
     elif mode == "prompt_json":
+        # 调用真实模型
         raw_text = _prompt_json_generate(config_path, config, messages, tools_schema)
         try:
             parsed_candidate, ai_message = _parse_model_output(raw_text)
@@ -392,6 +409,7 @@ def generate_ai_message(
         "error": error,
         "generated_at": generated_at,
     }
+    # 保存结果
     if artifact_dir:
         raw_path, message_path, log_path = _artifact_paths(artifact_dir, artifact_stem)
         write_json(raw_record, raw_path)
@@ -413,7 +431,7 @@ def generate_ai_message(
         "error": error,
     }
 
-
+# 命令行参数解析
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Generate one AIMessage with a local or mock LLM.")
     parser.add_argument("--model_config", required=True)

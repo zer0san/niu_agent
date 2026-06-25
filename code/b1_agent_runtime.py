@@ -11,7 +11,7 @@ from common.logging_utils import now_iso
 from common.path_utils import resolve_cli_path, resolve_from_file
 from common.schemas import validate_ai_message
 
-
+# 输入依赖
 def _validate_runtime_input(payload: dict) -> dict:
     if not isinstance(payload, dict):
         raise ValueError("runtime_input.json must contain an object")
@@ -31,6 +31,7 @@ def _validate_runtime_input(payload: dict) -> dict:
     if payload["save_memory"] not in {"none", "conversation", "global"}:
         raise ValueError("save_memory must be none, conversation, or global")
     if execution_mode == "fixture":
+        # 固定数据模式：使用预设的mock数据，无需真实执行
         fixtures = payload.get("fixtures")
         if not isinstance(fixtures, dict):
             raise ValueError("fixture mode requires a fixtures object")
@@ -46,6 +47,7 @@ def _validate_runtime_input(payload: dict) -> dict:
         if payload["save_memory"] != "none":
             raise ValueError("fixture mode requires save_memory=none")
     else:
+        # 集成模式：真实执行，需要完整的配置
         selected_ids = payload.setdefault("selected_memory_ids", [])
         if not isinstance(selected_ids, list) or not all(isinstance(item, str) for item in selected_ids):
             raise ValueError("selected_memory_ids must be a list of strings")
@@ -54,7 +56,7 @@ def _validate_runtime_input(payload: dict) -> dict:
             raise ValueError("use_global_memory must be boolean")
     return payload
 
-
+# 将选中的记忆文档化为XML风格的上下文字符串
 def _memory_context(selected_memory: dict) -> str:
     sections = []
     for document in selected_memory.get("selected_memory_docs", []):
@@ -64,19 +66,19 @@ def _memory_context(selected_memory: dict) -> str:
         )
     return "\n\n".join(sections)
 
-
+# 从模型配置文件读取默认的LLM模式
 def _default_llm_mode(model_config: Path) -> str:
     config = read_yaml(model_config)
     return config.get("runtime", {}).get("default_mode", "mock")
 
-
+# LLM接口
 def generate_ai_message(*args, **kwargs) -> dict:
     """Lazy B4 proxy retained as the integrated-mode injection point."""
     from b4_local_agent_llm import generate_ai_message as b4_generate_ai_message
 
     return b4_generate_ai_message(*args, **kwargs)
 
-
+# Fixture模式支持，加载预设的测试数据
 def _load_fixture_inputs(input_file: Path, runtime: dict) -> dict:
     fixtures = runtime["fixtures"]
     selected_memory = read_json(resolve_from_file(fixtures["selected_memory_path"], input_file))
@@ -100,7 +102,7 @@ def _load_fixture_inputs(input_file: Path, runtime: dict) -> dict:
         "tool_messages": tool_messages,
     }
 
-
+# 根据工具调用ID匹配预设的工具响应消息
 def _fixture_tool_messages(tool_calls: list[dict], preset_messages: dict) -> list[dict]:
     results = []
     for call in tool_calls:
@@ -131,10 +133,12 @@ def run_agent(
     runtime = _validate_runtime_input(read_json(input_file))
     print(f"user_input: {runtime['user_input']}")
     execution_mode = runtime["execution_mode"]
+    # 加载系统提示词
     prompt_path = resolve_from_file(runtime["system_prompt_path"], input_file)
     system_prompt = read_text(prompt_path).strip()
     fixture_data = None
     tools_file = memory_file = model_file = None
+    # 根据模式加载数据
     if execution_mode == "fixture":
         fixture_data = _load_fixture_inputs(input_file, runtime)
         selected_memory = fixture_data["selected_memory"]
@@ -158,6 +162,7 @@ def run_agent(
         )
         tools_schema = get_tools_schema(str(tools_file), runtime["toolset"], str(output_dir))
         mode = llm_mode or _default_llm_mode(model_file)
+    # 构建初始消息列表
     memory_context = _memory_context(selected_memory)
     if memory_context:
         system_prompt = f"{system_prompt}\n\n{memory_context}"
@@ -179,6 +184,7 @@ def run_agent(
     while True:
         llm_calls += 1
         turn_start = perf_counter()
+        # LLM推理
         if execution_mode == "fixture":
             if llm_calls > len(fixture_data["ai_messages"]):
                 raise ValueError("fixture AIMessage sequence ended before a final answer")
@@ -208,6 +214,7 @@ def run_agent(
             "tool_messages": [],
             "latency_ms": None,
         }
+        # 检查LLM状态
         if llm_status != "success":
             status = "llm_parse_error"
             terminal_error = {
@@ -219,13 +226,16 @@ def run_agent(
             turn["latency_ms"] = round((perf_counter() - turn_start) * 1000, 3)
             turns.append(turn)
             break
+        # 获取工具调用
         tool_calls = ai_message.get("tool_calls", [])
+        # 无工具调用，结束
         if not tool_calls:
             final_answer = ai_message["content"]
             print(f"content: {final_answer}")
             turn["latency_ms"] = round((perf_counter() - turn_start) * 1000, 3)
             turns.append(turn)
             break
+        # 超过最大轮次，结束
         if tool_rounds >= runtime["max_turns"]:
             requested = ", ".join(call.get("name", "unknown") for call in tool_calls)
             final_answer = (
@@ -241,6 +251,7 @@ def run_agent(
             turn["latency_ms"] = round((perf_counter() - turn_start) * 1000, 3)
             turns.append(turn)
             break
+        # 执行工具调用
         if execution_mode == "fixture":
             tool_messages = _fixture_tool_messages(
                 tool_calls,
@@ -259,7 +270,7 @@ def run_agent(
         turn["tool_messages"] = tool_messages
         turn["latency_ms"] = round((perf_counter() - turn_start) * 1000, 3)
         turns.append(turn)
-
+    # 结果输出
     write_json(messages, output_dir / "messages.json")
     if execution_mode == "integrated":
         write_json(all_tool_messages, output_dir / "tool_messages.json")
@@ -337,7 +348,7 @@ def run_agent(
         )
     return result
 
-
+# 命令行参数解析器
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the local Agent message and tool loop.")
     parser.add_argument("--input", required=True)
@@ -348,7 +359,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--outdir", required=True)
     return parser
 
-
+# 入口函数
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
