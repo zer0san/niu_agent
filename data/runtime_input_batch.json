@@ -1,0 +1,35 @@
+{
+  "batch_id": "batch_full_demo_001",
+  "tasks": [
+    {
+      "conversation_id": "batch_demo_file_read",
+      "user_input": "帮我阅读 docs/agent_intro.txt，总结三条中文要点。",
+      "system_prompt_path": "../prompts/local_tool_agent.txt",
+      "selected_memory_ids": [],
+      "use_global_memory": false,
+      "toolset": "basic_tools",
+      "max_turns": 3,
+      "save_memory": "none"
+    },
+    {
+      "conversation_id": "batch_demo_calculator",
+      "user_input": "帮我计算56*29+81，调用计算工具计算结果",
+      "system_prompt_path": "../prompts/local_tool_agent.txt",
+      "selected_memory_ids": [],
+      "use_global_memory": false,
+      "toolset": "basic_tools",
+      "max_turns": 2,
+      "save_memory": "none"
+    },
+    {
+      "conversation_id": "batch_demo_file_search",
+      "user_input": "请调用 local_file_search 工具在 docs 目录搜索关于工具编排的内容，返回最相关文件路径和一句中文摘要。",
+      "system_prompt_path": "../prompts/local_tool_agent.txt",
+      "selected_memory_ids": [],
+      "use_global_memory": false,
+      "toolset": "basic_tools",
+      "max_turns": 3,
+      "save_memory": "none"
+    }
+  ]
+}

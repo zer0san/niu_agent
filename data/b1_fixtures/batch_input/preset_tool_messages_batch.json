@@ -1,0 +1,23 @@
+{
+  "call_batch_001": {
+    "role": "tool",
+    "tool_call_id": "call_batch_001",
+    "name": "file_reader",
+    "content": "{\"skill_name\":\"file_reader\",\"status\":\"success\",\"input\":{\"path\":\"docs/agent_intro.txt\",\"max_chars\":2000},\"output\":{\"content\":\"Agent 系统通常由模型、工具、记忆和执行循环组成。\\n工具调用让模型能够读取本地文件、执行计算，并把结果用于后续回答。\\nMemory 为 Agent 提供全局知识和历史对话上下文。\",\"num_chars\":92,\"source\":\"docs/agent_intro.txt\",\"truncated\":false},\"error\":null,\"latency_ms\":0.0}",
+    "status": "success"
+  },
+  "call_batch_002": {
+    "role": "tool",
+    "tool_call_id": "call_batch_002",
+    "name": "calculator",
+    "content": "{\"skill_name\":\"calculator\",\"status\":\"success\",\"input\":{\"expression\":\"100 + 200 + 300\"},\"output\":{\"result\":600.0,\"expression\":\"100 + 200 + 300\"},\"error\":null,\"latency_ms\":0.0}",
+    "status": "success"
+  },
+  "call_batch_003": {
+    "role": "tool",
+    "tool_call_id": "call_batch_003",
+    "name": "table_analyzer",
+    "content": "{\"skill_name\":\"table_analyzer\",\"status\":\"success\",\"input\":{\"path\":\"tables/results.csv\",\"max_rows_preview\":5,\"describe\":true},\"output\":{\"columns\":[\"task\",\"score\",\"latency\"],\"num_rows\":3,\"preview\":[{\"task\":\"read_file\",\"score\":92,\"latency\":15.2},{\"task\":\"calculate\",\"score\":98,\"latency\":3.1},{\"task\":\"search\",\"score\":88,\"latency\":20.5}],\"statistics\":{\"score\":{\"mean\":92.67,\"min\":88,\"max\":98},\"latency\":{\"mean\":12.93,\"min\":3.1,\"max\":20.5}},\"truncated\":false},\"error\":null,\"latency_ms\":0.0}",
+    "status": "success"
+  }
+}

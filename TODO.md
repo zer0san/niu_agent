@@ -22,7 +22,19 @@ B4:
   "use_global_memory": true,
   "toolset": "basic_tools", (工具集)
   "max_turns": 3, (最大轮数)
-  "save_memory": "conversation" (存储本轮对话记忆，类型：对话)
+  "save_memory": "conversation" (存储本轮对话记忆，类型：对话),
+  "system_prompt_switches": [
+    {
+      "after_user_input": 0,
+      "switch_to": "../prompts/researcher.txt",
+      "mode": "append"
+    },
+    {
+      "after_user_input": 1,
+      "switch_to": "../prompts/coding_assistant.txt",
+      "mode": "replace"
+    }
+  ] (系统prompt模板切换规则)
 }
 
 # B1
@@ -40,7 +52,7 @@ B4:
 个人演示
 ```
 python b1_agent_runtime.py \
-  --input ../data/b1_fixtures/b1_fixture_input_multi.json \
+  --input ../data/b1_fixtures/multi_input/b1_fixture_input_multi.json \
   --outdir ../outputs/B1_fixture_multi
 ```
 
@@ -51,7 +63,7 @@ python b1_agent_runtime.py \
   --tools_config ../configs/tools.yaml \
   --memory_config ../configs/memory.yaml \
   --model_config ../configs/model.yaml \
-  --outdir ../outputs/B1_runtime
+  --outdir ../output/B1_runtime
 ```
 
 ## prompt 切换
@@ -76,4 +88,32 @@ python b1_agent_runtime.py \
 --memory_config ../configs/memory.yaml \
 --model_config ../configs/model.yaml \
 --outdir ../output/runtime_prompt_change
+```
+
+## 批量任务运行
+
+增加`--batch`参数，用于指定批量任务输入文件路径。
+
+新增批量执行函数`run_batch_agent`
+- 接收批量输入文件路径，解析出`batch_id`和任务列表
+- 顺序遍历每个任务，为每个任务创建独立的输出子目录
+- 调用现有的`run_agent`函数，执行每个任务
+
+个人演示
+```
+python b1_agent_runtime.py \
+  --input ../data/b1_fixtures/batch_input/b1_fixture_batch_input.json \
+  --outdir ../output/batch_test_1 \
+  --batch
+```
+
+全系统演示
+```
+python b1_agent_runtime.py \
+--input ../data/runtime_input_batch.json \
+--outdir ../output/batch_full_demo2 \
+--batch \
+--tools_config ../configs/tools.yaml \
+--memory_config ../configs/memory.yaml \
+--model_config ../configs/model.yaml
 ```

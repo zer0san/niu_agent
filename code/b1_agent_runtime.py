@@ -444,6 +444,182 @@ def run_agent(
         )
     return result
 
+def _validate_batch_input(payload: dict) -> dict:
+    if not isinstance(payload, dict):
+        raise ValueError("batch input must contain an object")
+    batch_id = payload.get("batch_id")
+    if not isinstance(batch_id, str) or not batch_id.strip():
+        raise ValueError("batch_id must be a non-empty string")
+    tasks = payload.get("tasks")
+    if not isinstance(tasks, list) or len(tasks) == 0:
+        raise ValueError("tasks must be a non-empty list")
+    for i, task in enumerate(tasks):
+        if not isinstance(task, dict):
+            raise ValueError(f"tasks[{i}] must be an object")
+        if "conversation_id" not in task:
+            task["conversation_id"] = f"task_{i + 1:03d}"
+        elif not isinstance(task["conversation_id"], str) or not task["conversation_id"].strip():
+            raise ValueError(f"tasks[{i}].conversation_id must be a non-empty string")
+    return payload
+
+
+def run_batch_agent(
+    input_path: str,
+    tools_config: str | None,
+    memory_config: str | None,
+    model_config: str | None,
+    outdir: str,
+    llm_mode: str | None = None,
+) -> dict:
+    started = perf_counter()
+    input_file = Path(input_path).resolve()
+    batch_dir = Path(outdir).resolve()
+    batch_dir.mkdir(parents=True, exist_ok=True)
+
+    batch_data = _validate_batch_input(read_json(input_file))
+    batch_id = batch_data["batch_id"]
+    tasks = batch_data["tasks"]
+
+    total_tasks = len(tasks)
+    success_count = 0
+    failed_count = 0
+    task_results = []
+
+    input_dir = input_file.parent
+
+    for task_index, task_input in enumerate(tasks):
+        conversation_id = task_input["conversation_id"]
+        task_outdir = batch_dir / conversation_id
+        task_outdir.mkdir(parents=True, exist_ok=True)
+
+        task_start = perf_counter()
+        print(f"\n=== Processing task [{task_index + 1}/{total_tasks}]: {conversation_id} ===")
+
+        try:
+            task_input_path = input_dir / f"{conversation_id}_task_input.json"
+            write_json(task_input, task_input_path)
+
+            result = run_agent(
+                str(task_input_path),
+                tools_config,
+                memory_config,
+                model_config,
+                str(task_outdir),
+                llm_mode,
+            )
+
+            task_input_path.unlink(missing_ok=True)
+
+            task_elapsed = round((perf_counter() - task_start) * 1000, 3)
+            task_results.append({
+                "task_index": task_index,
+                "conversation_id": conversation_id,
+                "status": result["status"],
+                "final_answer": result.get("final_answer", ""),
+                "elapsed_ms": task_elapsed,
+                "output_dir": str(task_outdir.relative_to(batch_dir)),
+                "llm_call_count": result.get("llm_call_count", 0),
+            })
+            success_count += 1
+            print(f"Task [{task_index + 1}/{total_tasks}] completed successfully in {task_elapsed:.1f}ms")
+
+        except Exception as exc:
+            task_elapsed = round((perf_counter() - task_start) * 1000, 3)
+            task_results.append({
+                "task_index": task_index,
+                "conversation_id": conversation_id,
+                "status": "failed",
+                "error": {
+                    "type": type(exc).__name__,
+                    "message": str(exc),
+                },
+                "elapsed_ms": task_elapsed,
+                "output_dir": str(task_outdir.relative_to(batch_dir)),
+            })
+            failed_count += 1
+            print(f"Task [{task_index + 1}/{total_tasks}] failed: {type(exc).__name__}: {exc}")
+
+    total_elapsed = round((perf_counter() - started) * 1000, 3)
+
+    if failed_count == 0:
+        overall_status = "success"
+    elif success_count == 0:
+        overall_status = "failed"
+    else:
+        overall_status = "partial"
+
+    summary = {
+        "batch_id": batch_id,
+        "total_tasks": total_tasks,
+        "success_count": success_count,
+        "failed_count": failed_count,
+        "overall_status": overall_status,
+        "start_time": now_iso(),
+        "end_time": now_iso(),
+        "total_elapsed_ms": total_elapsed,
+        "tasks": task_results,
+    }
+
+    summary_path = batch_dir / "batch_summary.json"
+    write_json(summary, summary_path)
+
+    summary_md = [
+        f"# Batch Execution Summary: {batch_id}\n",
+        f"- **Total Tasks:** {total_tasks}",
+        f"- **Success:** {success_count}",
+        f"- **Failed:** {failed_count}",
+        f"- **Overall Status:** `{overall_status}`",
+        f"- **Total Elapsed:** {total_elapsed / 1000:.2f}s\n",
+        "## Task Results\n",
+    ]
+
+    for task_result in task_results:
+        status_icon = "✅" if task_result["status"] == "success" else "❌"
+        elapsed = task_result["elapsed_ms"] / 1000
+        summary_md.append(f"### {status_icon} Task {task_result['task_index'] + 1}: {task_result['conversation_id']}")
+        summary_md.append(f"- **Status:** `{task_result['status']}`")
+        summary_md.append(f"- **Elapsed:** {elapsed:.2f}s")
+        if "llm_call_count" in task_result:
+            summary_md.append(f"- **LLM Calls:** {task_result['llm_call_count']}")
+        if task_result["status"] == "success":
+            summary_md.append(f"- **Final Answer:**\n\n{task_result['final_answer']}\n")
+        else:
+            summary_md.append(f"- **Error:** {task_result['error']['type']}: {task_result['error']['message']}\n")
+
+    summary_md_path = batch_dir / "batch_summary.md"
+    write_text("\n".join(summary_md), summary_md_path)
+
+    append_jsonl(
+        {
+            "timestamp": now_iso(),
+            "batch_id": batch_id,
+            "total_tasks": total_tasks,
+            "success_count": success_count,
+            "failed_count": failed_count,
+            "overall_status": overall_status,
+            "total_elapsed_ms": total_elapsed,
+        },
+        batch_dir / "batch_log.jsonl",
+    )
+
+    print(f"\n=== Batch {batch_id} completed ===")
+    print(f"Total: {total_tasks}, Success: {success_count}, Failed: {failed_count}")
+    print(f"Total elapsed: {total_elapsed / 1000:.2f}s")
+    print(f"Summary: {summary_md_path}")
+
+    return {
+        "batch_id": batch_id,
+        "overall_status": overall_status,
+        "total_tasks": total_tasks,
+        "success_count": success_count,
+        "failed_count": failed_count,
+        "total_elapsed_ms": total_elapsed,
+        "summary_path": str(summary_path),
+        "summary_md_path": str(summary_md_path),
+        "task_results": task_results,
+    }
+
+
 # 命令行参数解析器
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the local Agent message and tool loop.")
@@ -453,22 +629,35 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model_config")
     parser.add_argument("--llm_mode", choices=["mock", "prompt_json"], default=None)
     parser.add_argument("--outdir", required=True)
+    parser.add_argument("--batch", action="store_true", help="Run in batch mode with multiple tasks")
     return parser
 
 # 入口函数
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        result = run_agent(
-            str(resolve_cli_path(args.input)),
-            str(resolve_cli_path(args.tools_config)) if args.tools_config else None,
-            str(resolve_cli_path(args.memory_config)) if args.memory_config else None,
-            str(resolve_cli_path(args.model_config)) if args.model_config else None,
-            str(resolve_cli_path(args.outdir)),
-            args.llm_mode,
-        )
-        print(result["final_answer_path"])
-        return 0
+        if args.batch:
+            result = run_batch_agent(
+                str(resolve_cli_path(args.input)),
+                str(resolve_cli_path(args.tools_config)) if args.tools_config else None,
+                str(resolve_cli_path(args.memory_config)) if args.memory_config else None,
+                str(resolve_cli_path(args.model_config)) if args.model_config else None,
+                str(resolve_cli_path(args.outdir)),
+                args.llm_mode,
+            )
+            print(result["summary_md_path"])
+            return 0 if result["overall_status"] == "success" else 1
+        else:
+            result = run_agent(
+                str(resolve_cli_path(args.input)),
+                str(resolve_cli_path(args.tools_config)) if args.tools_config else None,
+                str(resolve_cli_path(args.memory_config)) if args.memory_config else None,
+                str(resolve_cli_path(args.model_config)) if args.model_config else None,
+                str(resolve_cli_path(args.outdir)),
+                args.llm_mode,
+            )
+            print(result["final_answer_path"])
+            return 0
     except Exception as exc:
         print(f"fatal: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1

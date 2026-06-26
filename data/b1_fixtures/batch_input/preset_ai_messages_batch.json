@@ -1,0 +1,59 @@
+[
+  {
+    "role": "assistant",
+    "content": "",
+    "tool_calls": [
+      {
+        "id": "call_batch_001",
+        "name": "file_reader",
+        "args": {
+          "path": "docs/agent_intro.txt",
+          "max_chars": 2000
+        }
+      }
+    ]
+  },
+  {
+    "role": "assistant",
+    "content": "根据读取的文档，Agent系统的核心要点如下：\n1. Agent系统由模型、工具、记忆和执行循环四大组件构成\n2. 工具调用机制使模型能够读取本地文件、执行计算并利用结果进行后续推理\n3. Memory模块为Agent提供全局知识存储和历史对话上下文支持",
+    "tool_calls": []
+  },
+  {
+    "role": "assistant",
+    "content": "",
+    "tool_calls": [
+      {
+        "id": "call_batch_002",
+        "name": "calculator",
+        "args": {
+          "expression": "100 + 200 + 300"
+        }
+      }
+    ]
+  },
+  {
+    "role": "assistant",
+    "content": "计算结果为：600",
+    "tool_calls": []
+  },
+  {
+    "role": "assistant",
+    "content": "",
+    "tool_calls": [
+      {
+        "id": "call_batch_003",
+        "name": "table_analyzer",
+        "args": {
+          "path": "tables/results.csv",
+          "max_rows_preview": 5,
+          "describe": true
+        }
+      }
+    ]
+  },
+  {
+    "role": "assistant",
+    "content": "数据分析结果：\n- 数据集包含3行记录，3个字段\n- 平均分数为92.67，平均延迟为12.93ms\n- read_file任务表现最佳，得分92分",
+    "tool_calls": []
+  }
+]

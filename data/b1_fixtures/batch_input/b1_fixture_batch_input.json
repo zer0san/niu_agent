@@ -1,0 +1,50 @@
+{
+  "batch_id": "batch_b1_fixture_001",
+  "tasks": [
+    {
+      "execution_mode": "fixture",
+      "conversation_id": "batch_task_doc_read",
+      "user_input": "请阅读 docs/agent_intro.txt 并总结核心要点",
+      "system_prompt_path": "../../../prompts/local_tool_agent.txt",
+      "toolset": "basic_tools",
+      "max_turns": 3,
+      "save_memory": "none",
+      "fixtures": {
+        "selected_memory_path": "preset_memory.json",
+        "tools_schema_path": "../../messages/tools_schema_basic.json",
+        "ai_messages_path": "preset_ai_messages_batch.json",
+        "tool_messages_path": "preset_tool_messages_batch.json"
+      }
+    },
+    {
+      "execution_mode": "fixture",
+      "conversation_id": "batch_task_calculator",
+      "user_input": "请计算 100 + 200 + 300 的结果",
+      "system_prompt_path": "../../../prompts/local_tool_agent.txt",
+      "toolset": "basic_tools",
+      "max_turns": 2,
+      "save_memory": "none",
+      "fixtures": {
+        "selected_memory_path": "preset_memory.json",
+        "tools_schema_path": "../../messages/tools_schema_basic.json",
+        "ai_messages_path": "preset_ai_messages_batch.json",
+        "tool_messages_path": "preset_tool_messages_batch.json"
+      }
+    },
+    {
+      "execution_mode": "fixture",
+      "conversation_id": "batch_task_table_analyze",
+      "user_input": "请分析 tables/results.csv 的统计特征",
+      "system_prompt_path": "../../../prompts/local_tool_agent.txt",
+      "toolset": "basic_tools",
+      "max_turns": 3,
+      "save_memory": "none",
+      "fixtures": {
+        "selected_memory_path": "preset_memory.json",
+        "tools_schema_path": "../../messages/tools_schema_basic.json",
+        "ai_messages_path": "preset_ai_messages_batch.json",
+        "tool_messages_path": "preset_tool_messages_batch.json"
+      }
+    }
+  ]
+}
