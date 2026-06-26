@@ -10,6 +10,7 @@ from common.io_utils import append_jsonl, read_json, read_text, read_yaml, write
 from common.logging_utils import now_iso
 from common.path_utils import resolve_cli_path, resolve_from_file
 from common.schemas import validate_ai_message
+from system_prompt_manager import SystemPromptManager
 
 # 输入依赖
 def _validate_runtime_input(payload: dict) -> dict:
@@ -64,6 +65,28 @@ def _validate_runtime_input(payload: dict) -> dict:
         payload.setdefault("use_global_memory", False)
         if not isinstance(payload["use_global_memory"], bool):
             raise ValueError("use_global_memory must be boolean")
+
+    # 验证 system_prompt_switches 配置
+    system_prompt_switches = payload.get("system_prompt_switches", [])
+    if system_prompt_switches is not None:
+        if not isinstance(system_prompt_switches, list):
+            raise ValueError("system_prompt_switches must be a list")
+        for i, switch in enumerate(system_prompt_switches):
+            if not isinstance(switch, dict):
+                raise ValueError(f"system_prompt_switches[{i}] must be an object")
+            if "switch_to" not in switch:
+                raise ValueError(f"system_prompt_switches[{i}] missing required field: switch_to")
+            if not isinstance(switch["switch_to"], str):
+                raise ValueError(f"system_prompt_switches[{i}].switch_to must be a string")
+            if "after_user_input" not in switch:
+                raise ValueError(f"system_prompt_switches[{i}] missing required field: after_user_input")
+            if not isinstance(switch["after_user_input"], int) or switch["after_user_input"] < 0:
+                raise ValueError(f"system_prompt_switches[{i}].after_user_input must be a non-negative integer")
+            mode = switch.get("mode", "replace")
+            if mode not in {"replace", "append"}:
+                raise ValueError(f"system_prompt_switches[{i}].mode must be 'replace' or 'append'")
+        payload["system_prompt_switches"] = system_prompt_switches
+
     return payload
 
 # 将选中的记忆文档化为XML风格的上下文字符串
@@ -144,8 +167,12 @@ def run_agent(
     user_inputs = runtime["user_inputs"]
     print(f"user_inputs: {user_inputs}")
     execution_mode = runtime["execution_mode"]
-    prompt_path = resolve_from_file(runtime["system_prompt_path"], input_file)
-    system_prompt = read_text(prompt_path).strip()
+
+    # 初始化 System Prompt 管理器
+    prompt_manager = SystemPromptManager(runtime["system_prompt_path"], input_file)
+    system_prompt_switches = runtime.get("system_prompt_switches", [])
+    print(f"system_prompt_switches: {system_prompt_switches}")
+
     fixture_data = None
     tools_file = memory_file = model_file = None
     if execution_mode == "fixture":
@@ -164,8 +191,17 @@ def run_agent(
         tools_schema = get_tools_schema(str(tools_file), runtime["toolset"], str(output_dir))
         mode = llm_mode or _default_llm_mode(model_file)
 
-    def _process_user_input(user_input: str, messages: list[dict], llm_call_offset: int) -> dict:
+    def _process_user_input(user_input: str, messages: list[dict], llm_call_offset: int, user_index: int) -> dict:
         nonlocal fixture_data, tools_file, memory_file, tools_schema, mode
+
+        # 检查是否需要切换 system prompt
+        for switch_config in system_prompt_switches:
+            if switch_config["after_user_input"] == user_index:
+                switch_record = prompt_manager.apply_switch(switch_config)
+                print(f"System prompt switched: {switch_record}")
+
+        # 获取当前的 system prompt
+        system_prompt = prompt_manager.get_current_prompt()
 
         if execution_mode != "fixture":
             selected_memory = load_memory(
@@ -309,7 +345,7 @@ def run_agent(
 
     for user_idx, user_input in enumerate(user_inputs):
         print(f"Processing user_input[{user_idx}]: {user_input}")
-        result = _process_user_input(user_input, messages, llm_call_offset)
+        result = _process_user_input(user_input, messages, llm_call_offset, user_idx)
         llm_call_offset = result["llm_call_offset"]
         all_turns.extend(result["turns"])
         all_tool_messages.extend(result["tool_messages"])
@@ -346,6 +382,7 @@ def run_agent(
         "error": terminal_error,
         "user_input_count": len(user_inputs),
         "final_answers": all_final_answers,
+        "system_prompt_switches": prompt_manager.get_prompt_history(),
     }
     write_json(trace, output_dir / "trace.json")
 

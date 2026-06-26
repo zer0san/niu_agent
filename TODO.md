@@ -53,3 +53,18 @@ python b1_agent_runtime.py \
   --model_config ../configs/model.yaml \
   --outdir ../outputs/B1_runtime
 ```
+
+## prompt 切换
+
+增加 `system_prompt_manager` 类，用于管理不同system prompt模板的切换。
+
+输入增加`system_prompt_switches`字段，用于指定不同轮次使用的system prompt模板。
+`replace`：替换当前system prompt模板，`append`：在当前system prompt模板基础上添加新内容。
+
+个人演示
+```
+python b1_agent_runtime.py \
+  --input ../data/b1_fixtures/prompt_change/b1_fixture_input.json \
+  --outdir ../output/prompt_change_test_1
+```
+

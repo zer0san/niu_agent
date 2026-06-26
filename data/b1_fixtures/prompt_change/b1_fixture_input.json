@@ -1,0 +1,31 @@
+{
+  "execution_mode": "fixture",
+  "conversation_id": "conv_prompt_change_001",
+  "user_inputs": [
+    "读取docs/agent_intro.txt文件并总结要点",
+    "帮我写一个Python函数来实现快速排序",
+    "将'Hello World'翻译成中文"
+  ],
+  "system_prompt_path": "../../../prompts/local_tool_agent.txt",
+  "system_prompt_switches": [
+    {
+      "after_user_input": 0,
+      "switch_to": "../../../prompts/coding_assistant.txt",
+      "mode": "replace"
+    },
+    {
+      "after_user_input": 1,
+      "switch_to": "../../../prompts/translator.txt",
+      "mode": "append"
+    }
+  ],
+  "toolset": "basic_tools",
+  "max_turns": 5,
+  "save_memory": "none",
+  "fixtures": {
+    "selected_memory_path": "preset_memory.json",
+    "tools_schema_path": "../../messages/tools_schema_basic.json",
+    "ai_messages_path": "preset_ai_messages.json",
+    "tool_messages_path": "preset_tool_messages.json"
+  }
+}
