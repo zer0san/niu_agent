@@ -37,8 +37,19 @@ B4:
   - 单轮用户输入格式：user_inputs
 - 核心循环重构(`run_agent`)，新增 `_process_user_input` 内部函数，封装单个用户输入的处理逻辑
 
+个人演示
 ```
 python b1_agent_runtime.py \
   --input ../data/b1_fixtures/b1_fixture_input_multi.json \
   --outdir ../outputs/B1_fixture_multi
+```
+
+全系统演示
+```
+python b1_agent_runtime.py \
+  --input ../data/runtime_input_multi.json \
+  --tools_config ../configs/tools.yaml \
+  --memory_config ../configs/memory.yaml \
+  --model_config ../configs/model.yaml \
+  --outdir ../outputs/B1_runtime
 ```
