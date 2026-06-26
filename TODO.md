@@ -25,4 +25,20 @@ B4:
   "save_memory": "conversation" (存储本轮对话记忆，类型：对话)
 }
 
+# B1
+
+## 多轮输入
+
 **注意，如果是单条消息，使用user_input；如果是多条消息，使用user_inputs**
+
+修改点：
+- 输入验证函数(`_validate_runtime_input`)，支持两种格式：
+  - 多轮用户输入格式：user_input
+  - 单轮用户输入格式：user_inputs
+- 核心循环重构(`run_agent`)，新增 `_process_user_input` 内部函数，封装单个用户输入的处理逻辑
+
+```
+python b1_agent_runtime.py \
+  --input ../data/b1_fixtures/b1_fixture_input_multi.json \
+  --outdir ../outputs/B1_fixture_multi
+```
