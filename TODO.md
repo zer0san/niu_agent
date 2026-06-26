@@ -112,8 +112,8 @@ python b1_agent_runtime.py \
 python b1_agent_runtime.py \
 --input ../data/runtime_input_batch.json \
 --outdir ../output/batch_full_demo2 \
---batch \
 --tools_config ../configs/tools.yaml \
 --memory_config ../configs/memory.yaml \
---model_config ../configs/model.yaml
+--model_config ../configs/model.yaml \
+--batch
 ```
