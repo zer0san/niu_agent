@@ -247,7 +247,6 @@ def _safe_output_path(output_dir: str | None, output_filename: str | None, targe
     while candidate.exists():
         candidate = directory / f"{stem}({index}){suffix}"
         index += 1
-
     return candidate
 
 
