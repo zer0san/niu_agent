@@ -68,3 +68,12 @@ python b1_agent_runtime.py \
   --outdir ../output/prompt_change_test_1
 ```
 
+全系统演示
+```
+python b1_agent_runtime.py \
+--input ../data/runtime_input_prompt.json \
+--tools_config ../configs/tools.yaml \
+--memory_config ../configs/memory.yaml \
+--model_config ../configs/model.yaml \
+--outdir ../output/runtime_prompt_change
+```

@@ -1,0 +1,26 @@
+{
+  "conversation_id": "conv_prompt_switch_001",
+  "user_inputs": [
+    "帮我阅读 docs/agent_intro.txt，总结三条中文要点。",
+    "请分析 tables/results.csv 表格，列出主要统计信息。",
+    "帮我写一个Python函数来计算这些成绩的平均值。"
+  ],
+  "system_prompt_path": "../prompts/local_tool_agent.txt",
+  "system_prompt_switches": [
+    {
+      "after_user_input": 0,
+      "switch_to": "../prompts/researcher.txt",
+      "mode": "append"
+    },
+    {
+      "after_user_input": 1,
+      "switch_to": "../prompts/coding_assistant.txt",
+      "mode": "replace"
+    }
+  ],
+  "selected_memory_ids": ["mem_conversation_conv_000"],
+  "use_global_memory": true,
+  "toolset": "basic_tools",
+  "max_turns": 5,
+  "save_memory": "conversation"
+}
