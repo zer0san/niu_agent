@@ -224,12 +224,19 @@ def _build_prompt_messages(messages: list[dict], tools_schema: list[dict]) -> li
         'The first output character must be "{" and the last output character must be "}".\n\n'
         "Valid schema A:\n"
         '{"content":"final answer text","tool_calls":[]}\n\n'
-        "Valid schema B:\n"
+        "Valid schema B (single tool):\n"
         '{"content":"","tool_calls":[{"id":"call_001","name":"file_reader",'
         '"args":{"path":"docs/agent_intro.txt","max_chars":2000}}]}\n\n'
+        "Valid schema B (multiple tools):\n"
+        '{"content":"","tool_calls":[\n'
+        '  {"id":"call_001","name":"file_reader","args":{"path":"docs/a.txt"}},\n'
+        '  {"id":"call_002","name":"file_reader","args":{"path":"docs/b.txt"}},\n'
+        '  {"id":"call_003","name":"calculator","args":{"expression":"1+2"}}'
+        ']}\n\n'
         "The top-level keys must be exactly:\n"
         "- content: string\n"
-        "- tool_calls: array\n\n"
+        "- tool_calls: array (may contain 0, 1, or multiple tool calls)\n\n"
+        "You may request multiple tools in one response when they are independent.\n"
         "Never put tool_calls inside content.\n"
         'Never output {"content":"tool_calls": ...}.'
     )
@@ -238,7 +245,9 @@ def _build_prompt_messages(messages: list[dict], tools_schema: list[dict]) -> li
         'Your first output character must be "{" and your last output character must be "}". '
         "Never output a backtick, Markdown, a code block, an explanation, or text outside the JSON. "
         'Use exactly the top-level keys "content" (string) and "tool_calls" (array). '
-        "Choose exactly one schema: final content with an empty tool_calls array, or empty content with tool calls. "
+        "Choose one schema: final content with an empty tool_calls array, "
+        "or empty content with one or more tool calls. "
+        "You may request multiple tools in one response when they are independent. "
         'Never put tool_calls inside content. Never output {"content":"tool_calls": ...}.'
     )
     system_instruction = (
@@ -259,14 +268,20 @@ def _build_prompt_messages(messages: list[dict], tools_schema: list[dict]) -> li
             break
     # 如果最后一条消息是tool消息，追加引导提醒
     if prompt_messages[-1].get("role") == "tool":
+        tool_count = 0
+        for msg in reversed(prompt_messages):
+            if msg.get("role") == "tool":
+                tool_count += 1
+            else:
+                break
         prompt_messages.append(
             {
                 "role": "user",
                 "content": (
                     envelope_reminder
-                    + " The latest ToolMessage already contains a tool result. If it provides the requested "
-                    'information, answer with schema A now and set "tool_calls" to exactly []. Do not repeat the '
-                    "completed tool call."
+                    + f" The latest {tool_count} ToolMessage(s) already contain tool results. "
+                    "If they provide the requested information, answer with schema A now "
+                    'and set "tool_calls" to exactly []. Do not repeat the completed tool calls.'
                 ),
             }
         )

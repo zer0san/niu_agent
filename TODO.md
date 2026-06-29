@@ -157,3 +157,21 @@ python code/b1_agent_runtime.py \
     --outdir output/server_react_test
 ```
 
+## 单轮AIMessage生成多个tool_calls与单轮接收多个ToolMessage
+
+修改prompt，给prompt添加一些示例，允许模型生成多个tool_calls。
+
+修改local_tool_agent.txt
+
+增加了工具调用失败的处理策略：
+- abort：如果有一个工具调用失败，整个任务失败。
+- continue：如果有一个工具调用失败，继续执行其他工具调用。
+
+```
+python code/b1_agent_runtime.py \
+  --input data/runtime_input_multi_tool.json \
+  --tools_config configs/tools.yaml \
+  --memory_config configs/memory.yaml \
+  --model_config configs/model.yaml \
+  --outdir output/multi_tool_test
+```

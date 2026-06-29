@@ -44,6 +44,9 @@ def _validate_runtime_input(payload: dict) -> dict:
         raise ValueError("max_turns must be a positive integer")
     if payload["save_memory"] not in {"none", "conversation", "global"}:
         raise ValueError("save_memory must be none, conversation, or global")
+    tool_failure_policy = payload.setdefault("tool_failure_policy", "continue")
+    if tool_failure_policy not in {"continue", "abort"}:
+        raise ValueError("tool_failure_policy must be continue or abort")
     if execution_mode == "fixture":
         # 固定数据模式：使用预设的mock数据，无需真实执行
         fixtures = payload.get("fixtures")
@@ -468,6 +471,27 @@ def run_agent(
                 turn["tool_messages"] = tool_messages
                 turn["latency_ms"] = round((perf_counter() - turn_start) * 1000, 3)
                 current_turns.append(turn)
+
+                failed_calls = [tm for tm in tool_messages if tm.get("status") == "error"]
+                if failed_calls:
+                    if runtime.get("tool_failure_policy") == "abort":
+                        failed_ids = [tm["tool_call_id"] for tm in failed_calls]
+                        failed_names = [tm["name"] for tm in failed_calls]
+                        current_final_answer = (
+                            f"任务因工具调用失败而终止。"
+                            f"失败的工具调用：{', '.join(failed_names)}"
+                        )
+                        current_status = "tool_execution_error"
+                        current_error = {
+                            "type": "ToolExecutionError",
+                            "message": current_final_answer,
+                            "failed_tool_call_ids": failed_ids,
+                            "failed_tool_names": failed_names,
+                        }
+                        break
+                    else:
+                        failed_ids = [tm["tool_call_id"] for tm in failed_calls]
+                        warnings.append(f"部分工具调用失败: {', '.join(failed_ids)}")
 
         return {
             "turns": current_turns,
