@@ -1,0 +1,23 @@
+{
+    "plan_id": "plan_fixture_001",
+    "total_steps": 2,
+    "plan_summary": "阅读文档并总结要点",
+    "steps": [
+        {
+            "step_index": 1,
+            "description": "读取文档文件获取内容",
+            "tool_name": "file_reader",
+            "tool_args": {"path": "data/docs/agent_intro.txt", "max_chars": 2000},
+            "reason": "用户请求涉及文件内容，需要先读取文档",
+            "is_final": false
+        },
+        {
+            "step_index": 2,
+            "description": "总结文档内容并给出最终回答",
+            "tool_name": null,
+            "tool_args": null,
+            "reason": "已获取文档内容，现在可以总结回答用户问题",
+            "is_final": true
+        }
+    ]
+}

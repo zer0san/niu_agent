@@ -135,6 +135,13 @@ Plan-and-Execute 功能不只修改了b4，还修改了b1。
 - 在b4_local_agent_llm.py中添加规划模式的实现
 - 在b1_agent_runtime.py中添加计划执行循环
 
+```
+python code/b1_agent_runtime.py \
+    --input data/b4_fixtures_plan/b4_fixture_input.json \
+    --outdir output/fixture_plan_test
+```
+
+
 运行测试：
 
 运行 Plan-and-Execute 模式测试
@@ -169,9 +176,17 @@ python code/b1_agent_runtime.py \
 
 ```
 python code/b1_agent_runtime.py \
+--input data/b4_fixtures/b4_fixtures_plan/b4_fixture_input.json \
+--outdir output/multi_tool_fixture_test
+```
+
+
+```
+python code/b1_agent_runtime.py \
   --input data/runtime_input_multi_tool.json \
   --tools_config configs/tools.yaml \
   --memory_config configs/memory.yaml \
   --model_config configs/model.yaml \
   --outdir output/multi_tool_test
 ```
+

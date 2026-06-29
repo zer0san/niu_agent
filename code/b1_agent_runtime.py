@@ -48,7 +48,6 @@ def _validate_runtime_input(payload: dict) -> dict:
     if tool_failure_policy not in {"continue", "abort"}:
         raise ValueError("tool_failure_policy must be continue or abort")
     if execution_mode == "fixture":
-        # 固定数据模式：使用预设的mock数据，无需真实执行
         fixtures = payload.get("fixtures")
         if not isinstance(fixtures, dict):
             raise ValueError("fixture mode requires a fixtures object")
@@ -63,6 +62,9 @@ def _validate_runtime_input(payload: dict) -> dict:
             raise ValueError(f"fixtures missing paths: {', '.join(missing_fixtures)}")
         if payload["save_memory"] != "none":
             raise ValueError("fixture mode requires save_memory=none")
+        decision_mode = payload.get("decision_mode", "react")
+        if decision_mode == "plan_and_execute" and not isinstance(fixtures.get("plan_path"), str):
+            raise ValueError("plan_and_execute mode in fixture requires plan_path")
     else:
         # 集成模式：真实执行，需要完整的配置
         selected_ids = payload.setdefault("selected_memory_ids", [])
@@ -132,6 +134,11 @@ def _load_fixture_inputs(input_file: Path, runtime: dict) -> dict:
     tools_schema = read_json(resolve_from_file(fixtures["tools_schema_path"], input_file))
     ai_messages = read_json(resolve_from_file(fixtures["ai_messages_path"], input_file))
     tool_messages = read_json(resolve_from_file(fixtures["tool_messages_path"], input_file))
+    plan = None
+    if "plan_path" in fixtures:
+        plan = read_json(resolve_from_file(fixtures["plan_path"], input_file))
+        if not isinstance(plan, dict):
+            raise ValueError("preset plan must be a JSON object")
     if not isinstance(selected_memory, dict):
         raise ValueError("preset memory must be a JSON object")
     if not isinstance(tools_schema, list):
@@ -147,6 +154,7 @@ def _load_fixture_inputs(input_file: Path, runtime: dict) -> dict:
         "tools_schema": tools_schema,
         "ai_messages": ai_messages,
         "tool_messages": tool_messages,
+        "plan": plan,
     }
 
 # 根据工具调用ID匹配预设的工具响应消息
@@ -253,9 +261,91 @@ def run_agent(
         # 选择决策模式(plan-and-execute / react)
         if decision_mode == "plan_and_execute":
             if execution_mode == "fixture":
-                current_final_answer = "Plan-and-Execute mode is not supported in fixture mode."
-                current_status = "error"
-                current_error = {"type": "UnsupportedMode", "message": current_final_answer}
+                plan = fixture_data.get("plan")
+                if not plan:
+                    current_final_answer = "Plan-and-Execute mode requires a preset plan in fixture."
+                    current_status = "error"
+                    current_error = {"type": "MissingPlan", "message": current_final_answer}
+                else:
+                    print(f"Using preset plan: {plan['plan_summary']}")
+                    print(f"Total steps: {plan['total_steps']}")
+                    ai_msg_index = 0
+
+                    for step in plan["steps"]:
+                        step_index = step["step_index"]
+                        llm_calls = llm_call_offset + len(current_turns) + 1
+                        turn_start = perf_counter()
+
+                        if step["tool_name"]:
+                            tool_call = {"id": f"call_plan_{step_index:03d}", "name": step["tool_name"], "args": step["tool_args"]}
+
+                            tool_messages = _fixture_tool_messages([tool_call], fixture_data["tool_messages"])
+
+                            messages.extend(tool_messages)
+                            current_tool_messages.extend(tool_messages)
+
+                            ai_message = {
+                                "role": "assistant",
+                                "content": "",
+                                "tool_calls": [tool_call],
+                            }
+                            messages.append(ai_message)
+
+                            turn = {
+                                "turn_index": llm_calls,
+                                "step_index": step_index,
+                                "step_description": step["description"],
+                                "ai_message": ai_message,
+                                "llm_status": "success",
+                                "llm_error": None,
+                                "tool_messages": tool_messages,
+                                "latency_ms": round((perf_counter() - turn_start) * 1000, 3),
+                            }
+                            current_turns.append(turn)
+
+                            if tool_messages[0].get("status") == "error":
+                                current_final_answer = f"步骤 {step_index} 执行失败：{tool_messages[0].get('content', '')}"
+                                current_status = "tool_execution_error"
+                                current_error = {
+                                    "type": "ToolExecutionError",
+                                    "message": current_final_answer,
+                                    "step_index": step_index,
+                                    "tool_name": step["tool_name"],
+                                }
+                                break
+
+                        elif step["is_final"]:
+                            if ai_msg_index >= len(fixture_data["ai_messages"]):
+                                raise ValueError("fixture AIMessage sequence ended before a final answer")
+                            ai_message = deepcopy(fixture_data["ai_messages"][ai_msg_index])
+                            ai_msg_index += 1
+                            llm_status = "success"
+                            llm_error = None
+
+                            messages.append(ai_message)
+
+                            turn = {
+                                "turn_index": llm_calls,
+                                "step_index": step_index,
+                                "step_description": step["description"],
+                                "ai_message": ai_message,
+                                "llm_status": llm_status,
+                                "llm_error": llm_error,
+                                "tool_messages": [],
+                                "latency_ms": round((perf_counter() - turn_start) * 1000, 3),
+                            }
+                            current_turns.append(turn)
+
+                            current_final_answer = ai_message["content"]
+                            print(f"content: {current_final_answer}")
+
+                            break
+
+                        if len(current_turns) >= runtime["max_turns"]:
+                            current_final_answer = "任务因超过最大轮次而终止。"
+                            current_status = "max_turns_exceeded"
+                            current_error = {"type": "MaxTurnsExceeded", "message": current_final_answer}
+                            break
             else:
                 planner_prompt_path = runtime.get("planner_prompt_path", "prompts/planner.txt")
                 planner_prompt = read_text(resolve_from_file(planner_prompt_path, input_file))

@@ -1,0 +1,9 @@
+{
+  "status": "success",
+  "query": "帮我同时阅读 docs/agent_intro.txt 和 docs/search_skill_demo.md，然后总结它们各自的内容要点。",
+  "selected_memory_docs": [],
+  "max_memory_chars": 2000,
+  "total_chars": 0,
+  "truncated": false,
+  "errors": []
+}
