@@ -117,3 +117,43 @@ python b1_agent_runtime.py \
 --model_config ../configs/model.yaml \
 --batch
 ```
+
+# B4
+
+## 支持Plan-and-Execute
+
+Plan-and-Execute 功能不只修改了b4，还修改了b1。
+运行时需要运行b1
+
+- 新增决策模式 ：在 runtime_input.json 中添加 decision_mode 字段
+- 规划器实现 ：在 b4_local_agent_llm.py 中添加规划模式
+- 执行器实现 ：在 b1_agent_runtime.py 中添加计划执行循环
+- 规划提示模板 ：新增 planner.txt 和 executor.txt 提示模板
+
+具体实现：
+- 在common/schemas.py中添加PlanStep和ExecutionPlan的构造和验证函数
+- 在b4_local_agent_llm.py中添加规划模式的实现
+- 在b1_agent_runtime.py中添加计划执行循环
+
+运行测试：
+
+运行 Plan-and-Execute 模式测试
+```
+python code/b1_agent_runtime.py \
+    --input data/server_test_plan.json \
+    --tools_config configs/tools.yaml \
+    --memory_config configs/memory.yaml \
+    --model_config configs/model.yaml \
+    --outdir output/server_plan_test
+```
+
+运行 ReAct 模式测试
+```
+python code/b1_agent_runtime.py \
+    --input data/server_test_react.json \
+    --tools_config configs/tools.yaml \
+    --memory_config configs/memory.yaml \
+    --model_config configs/model.yaml \
+    --outdir output/server_react_test
+```
+

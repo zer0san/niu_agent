@@ -1,0 +1,13 @@
+{
+    "conversation_id": "server_test_plan_and_execute",
+    "system_prompt_path": "../prompts/local_tool_agent.txt",
+    "toolset": "basic_tools",
+    "max_turns": 5,
+    "save_memory": "none",
+    "execution_mode": "integrated",
+    "decision_mode": "plan_and_execute",
+    "planner_prompt_path": "../prompts/planner.txt",
+    "user_inputs": [
+        "帮我阅读 data/docs/agent_intro.txt，总结三条中文要点。"
+    ]
+}

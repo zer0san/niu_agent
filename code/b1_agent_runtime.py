@@ -19,6 +19,9 @@ def _validate_runtime_input(payload: dict) -> dict:
     execution_mode = payload.setdefault("execution_mode", "integrated")
     if execution_mode not in {"integrated", "fixture"}:
         raise ValueError("execution_mode must be integrated or fixture")
+    decision_mode = payload.setdefault("decision_mode", "react")
+    if decision_mode not in {"react", "plan_and_execute"}:
+        raise ValueError("decision_mode must be react or plan_and_execute")
     required = ["conversation_id", "system_prompt_path", "toolset", "max_turns", "save_memory"]
     missing = [field for field in required if field not in payload]
     if missing:
@@ -102,7 +105,7 @@ def _memory_context(selected_memory: dict) -> str:
 # 从模型配置文件读取默认的LLM模式
 def _default_llm_mode(model_config: Path) -> str:
     config = read_yaml(model_config)
-    return config.get("runtime", {}).get("default_mode", "mock")
+    return config.get("runtime", {}).get("default_mode", "prompt_json")
 
 # LLM接口
 def generate_ai_message(*args, **kwargs) -> dict:
@@ -110,6 +113,14 @@ def generate_ai_message(*args, **kwargs) -> dict:
     from b4_local_agent_llm import generate_ai_message as b4_generate_ai_message
 
     return b4_generate_ai_message(*args, **kwargs)
+
+
+# 规划器接口
+def generate_plan(*args, **kwargs) -> dict:
+    """Lazy B4 proxy for plan generation."""
+    from b4_local_agent_llm import generate_plan as b4_generate_plan
+
+    return b4_generate_plan(*args, **kwargs)
 
 # Fixture模式支持，加载预设的测试数据
 def _load_fixture_inputs(input_file: Path, runtime: dict) -> dict:
@@ -232,96 +243,231 @@ def run_agent(
         current_final_answer = ""
         current_status = "success"
         current_error = None
+        plan = None
 
-        while True:
-            llm_calls = llm_call_offset + len(current_turns) + 1
-            turn_start = perf_counter()
+        decision_mode = runtime.get("decision_mode", "react")
 
+        # 选择决策模式(plan-and-execute / react)
+        if decision_mode == "plan_and_execute":
             if execution_mode == "fixture":
-                if llm_calls > len(fixture_data["ai_messages"]):
-                    raise ValueError("fixture AIMessage sequence ended before a final answer")
-                ai_message = deepcopy(fixture_data["ai_messages"][llm_calls - 1])
-                llm_status = "success"
-                llm_error = None
+                current_final_answer = "Plan-and-Execute mode is not supported in fixture mode."
+                current_status = "error"
+                current_error = {"type": "UnsupportedMode", "message": current_final_answer}
             else:
-                llm_result = generate_ai_message(
+                planner_prompt_path = runtime.get("planner_prompt_path", "prompts/planner.txt")
+                planner_prompt = read_text(resolve_from_file(planner_prompt_path, input_file))
+
+                plan_result = generate_plan(
                     str(model_file),
-                    messages,
+                    messages[:],
                     tools_schema,
-                    mode,
-                    str(output_dir / "llm_calls"),
-                    f"llm_call_{llm_calls:03d}",
-                )
-                if not isinstance(llm_result, dict) or not isinstance(llm_result.get("ai_message"), dict):
-                    raise ValueError("B4 result must contain an ai_message object")
-                ai_message = llm_result["ai_message"]
-                llm_status = llm_result.get("status")
-                llm_error = llm_result.get("error")
-
-            messages.append(ai_message)
-            turn = {
-                "turn_index": llm_calls,
-                "ai_message": ai_message,
-                "llm_status": llm_status,
-                "llm_error": llm_error,
-                "tool_messages": [],
-                "latency_ms": None,
-            }
-
-            if llm_status != "success":
-                current_status = "llm_parse_error"
-                current_error = {
-                    "type": "LLMParseError",
-                    "message": "B4 failed to parse the model output as a valid AIMessage JSON object.",
-                    "llm_call_index": llm_calls,
-                    "cause": llm_error,
-                }
-                turn["latency_ms"] = round((perf_counter() - turn_start) * 1000, 3)
-                current_turns.append(turn)
-                break
-
-            tool_calls = ai_message.get("tool_calls", [])
-            if not tool_calls:
-                current_final_answer = ai_message["content"]
-                print(f"content: {current_final_answer}")
-                turn["latency_ms"] = round((perf_counter() - turn_start) * 1000, 3)
-                current_turns.append(turn)
-                break
-
-            if len(current_turns) >= runtime["max_turns"]:
-                requested = ", ".join(call.get("name", "unknown") for call in tool_calls)
-                current_final_answer = (
-                    "任务因超过最大工具调用轮次而终止，"
-                    f"最后一次模型仍请求调用工具：{requested}。"
-                )
-                current_status = "max_turns_exceeded"
-                current_error = {
-                    "type": "MaxTurnsExceeded",
-                    "message": current_final_answer,
-                    "unexecuted_tool_calls": tool_calls,
-                }
-                turn["latency_ms"] = round((perf_counter() - turn_start) * 1000, 3)
-                current_turns.append(turn)
-                break
-
-            if execution_mode == "fixture":
-                tool_messages = _fixture_tool_messages(
-                    tool_calls,
-                    fixture_data["tool_messages"],
-                )
-            else:
-                tool_messages = execute_tool_calls(
-                    tool_calls,
+                    planner_prompt,
                     str(tools_file),
                     runtime["toolset"],
-                    str(output_dir),
+                    str(output_dir / "plans"),
+                    "plan",
                 )
 
-            messages.extend(tool_messages)
-            current_tool_messages.extend(tool_messages)
-            turn["tool_messages"] = tool_messages
-            turn["latency_ms"] = round((perf_counter() - turn_start) * 1000, 3)
-            current_turns.append(turn)
+                plan = plan_result["plan"]
+                plan_status = plan_result["status"]
+
+                if plan_status != "success" or not plan:
+                    current_final_answer = "规划失败，无法生成执行计划。"
+                    current_status = "plan_generation_error"
+                    current_error = {
+                        "type": "PlanGenerationError",
+                        "message": current_final_answer,
+                        "cause": plan_result.get("error"),
+                    }
+                else:
+                    print(f"Generated plan: {plan['plan_summary']}")
+                    print(f"Total steps: {plan['total_steps']}")
+
+                    for step in plan["steps"]:
+                        step_index = step["step_index"]
+                        llm_calls = llm_call_offset + len(current_turns) + 1
+                        turn_start = perf_counter()
+
+                        if step["tool_name"]:
+                            tool_call = {"id": f"call_plan_{step_index:03d}", "name": step["tool_name"], "args": step["tool_args"]}
+
+                            tool_messages = execute_tool_calls(
+                                [tool_call],
+                                str(tools_file),
+                                runtime["toolset"],
+                                str(output_dir),
+                            )
+
+                            messages.extend(tool_messages)
+                            current_tool_messages.extend(tool_messages)
+
+                            ai_message = {
+                                "role": "assistant",
+                                "content": "",
+                                "tool_calls": [tool_call],
+                            }
+                            messages.append(ai_message)
+
+                            turn = {
+                                "turn_index": llm_calls,
+                                "step_index": step_index,
+                                "step_description": step["description"],
+                                "ai_message": ai_message,
+                                "llm_status": "success",
+                                "llm_error": None,
+                                "tool_messages": tool_messages,
+                                "latency_ms": round((perf_counter() - turn_start) * 1000, 3),
+                            }
+                            current_turns.append(turn)
+
+                            if tool_messages[0].get("status") == "error":
+                                current_final_answer = f"步骤 {step_index} 执行失败：{tool_messages[0].get('content', '')}"
+                                current_status = "tool_execution_error"
+                                current_error = {
+                                    "type": "ToolExecutionError",
+                                    "message": current_final_answer,
+                                    "step_index": step_index,
+                                    "tool_name": step["tool_name"],
+                                }
+                                break
+
+                        elif step["is_final"]:
+                            llm_result = generate_ai_message(
+                                str(model_file),
+                                messages,
+                                tools_schema,
+                                str(output_dir / "llm_calls"),
+                                f"llm_call_{llm_calls:03d}",
+                            )
+                            if not isinstance(llm_result, dict) or not isinstance(llm_result.get("ai_message"), dict):
+                                raise ValueError("B4 result must contain an ai_message object")
+                            ai_message = llm_result["ai_message"]
+                            llm_status = llm_result.get("status")
+                            llm_error = llm_result.get("error")
+
+                            messages.append(ai_message)
+
+                            turn = {
+                                "turn_index": llm_calls,
+                                "step_index": step_index,
+                                "step_description": step["description"],
+                                "ai_message": ai_message,
+                                "llm_status": llm_status,
+                                "llm_error": llm_error,
+                                "tool_messages": [],
+                                "latency_ms": round((perf_counter() - turn_start) * 1000, 3),
+                            }
+                            current_turns.append(turn)
+
+                            if llm_status != "success":
+                                current_final_answer = "生成最终回答失败。"
+                                current_status = "llm_parse_error"
+                                current_error = {
+                                    "type": "LLMParseError",
+                                    "message": "B4 failed to parse the model output as a valid AIMessage JSON object.",
+                                    "llm_call_index": llm_calls,
+                                    "cause": llm_error,
+                                }
+                            else:
+                                current_final_answer = ai_message["content"]
+                                print(f"content: {current_final_answer}")
+
+                            break
+
+                        if len(current_turns) >= runtime["max_turns"]:
+                            current_final_answer = "任务因超过最大轮次而终止。"
+                            current_status = "max_turns_exceeded"
+                            current_error = {"type": "MaxTurnsExceeded", "message": current_final_answer}
+                            break
+        else:
+            while True:
+                llm_calls = llm_call_offset + len(current_turns) + 1
+                turn_start = perf_counter()
+
+                if execution_mode == "fixture":
+                    if llm_calls > len(fixture_data["ai_messages"]):
+                        raise ValueError("fixture AIMessage sequence ended before a final answer")
+                    ai_message = deepcopy(fixture_data["ai_messages"][llm_calls - 1])
+                    llm_status = "success"
+                    llm_error = None
+                else:
+                    llm_result = generate_ai_message(
+                        str(model_file),
+                        messages,
+                        tools_schema,
+                        str(output_dir / "llm_calls"),
+                        f"llm_call_{llm_calls:03d}",
+                    )
+                    if not isinstance(llm_result, dict) or not isinstance(llm_result.get("ai_message"), dict):
+                        raise ValueError("B4 result must contain an ai_message object")
+                    ai_message = llm_result["ai_message"]
+                    llm_status = llm_result.get("status")
+                    llm_error = llm_result.get("error")
+
+                messages.append(ai_message)
+                turn = {
+                    "turn_index": llm_calls,
+                    "ai_message": ai_message,
+                    "llm_status": llm_status,
+                    "llm_error": llm_error,
+                    "tool_messages": [],
+                    "latency_ms": None,
+                }
+
+                if llm_status != "success":
+                    current_status = "llm_parse_error"
+                    current_error = {
+                        "type": "LLMParseError",
+                        "message": "B4 failed to parse the model output as a valid AIMessage JSON object.",
+                        "llm_call_index": llm_calls,
+                        "cause": llm_error,
+                    }
+                    turn["latency_ms"] = round((perf_counter() - turn_start) * 1000, 3)
+                    current_turns.append(turn)
+                    break
+
+                tool_calls = ai_message.get("tool_calls", [])
+                if not tool_calls:
+                    current_final_answer = ai_message["content"]
+                    print(f"content: {current_final_answer}")
+                    turn["latency_ms"] = round((perf_counter() - turn_start) * 1000, 3)
+                    current_turns.append(turn)
+                    break
+
+                if len(current_turns) >= runtime["max_turns"]:
+                    requested = ", ".join(call.get("name", "unknown") for call in tool_calls)
+                    current_final_answer = (
+                        "任务因超过最大工具调用轮次而终止，"
+                        f"最后一次模型仍请求调用工具：{requested}。"
+                    )
+                    current_status = "max_turns_exceeded"
+                    current_error = {
+                        "type": "MaxTurnsExceeded",
+                        "message": current_final_answer,
+                        "unexecuted_tool_calls": tool_calls,
+                    }
+                    turn["latency_ms"] = round((perf_counter() - turn_start) * 1000, 3)
+                    current_turns.append(turn)
+                    break
+
+                if execution_mode == "fixture":
+                    tool_messages = _fixture_tool_messages(
+                        tool_calls,
+                        fixture_data["tool_messages"],
+                    )
+                else:
+                    tool_messages = execute_tool_calls(
+                        tool_calls,
+                        str(tools_file),
+                        runtime["toolset"],
+                        str(output_dir),
+                    )
+
+                messages.extend(tool_messages)
+                current_tool_messages.extend(tool_messages)
+                turn["tool_messages"] = tool_messages
+                turn["latency_ms"] = round((perf_counter() - turn_start) * 1000, 3)
+                current_turns.append(turn)
 
         return {
             "turns": current_turns,
@@ -331,6 +477,7 @@ def run_agent(
             "error": current_error,
             "llm_call_offset": llm_call_offset + len(current_turns),
             "selected_memory": selected_memory,
+            "plan": plan,
         }
 
     messages: list[dict] = []

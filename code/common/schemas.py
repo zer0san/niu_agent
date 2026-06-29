@@ -110,3 +110,91 @@ def validate_messages(messages: Any) -> list[dict]:
                 if field not in message:
                     raise ValueError(f"tool message {index} missing {field}")
     return messages
+
+
+def make_plan_step(
+    step_index: int,
+    description: str,
+    tool_name: str | None,
+    tool_args: dict | None,
+    reason: str,
+    is_final: bool = False,
+) -> dict:
+    step = {
+        "step_index": step_index,
+        "description": description,
+        "tool_name": tool_name,
+        "tool_args": tool_args,
+        "reason": reason,
+        "is_final": is_final,
+    }
+    validate_plan_step(step)
+    return step
+
+
+def validate_plan_step(step: dict) -> None:
+    if not isinstance(step, dict):
+        raise ValueError("plan step must be an object")
+    if not isinstance(step.get("step_index"), int) or step["step_index"] < 1:
+        raise ValueError("plan step_index must be a positive integer")
+    if not isinstance(step.get("description"), str) or not step["description"].strip():
+        raise ValueError("plan step description must be a non-empty string")
+    tool_name = step.get("tool_name")
+    tool_args = step.get("tool_args")
+    if tool_name is not None:
+        if not isinstance(tool_name, str) or not tool_name.strip():
+            raise ValueError("plan step tool_name must be a non-empty string or null")
+        if not isinstance(tool_args, dict):
+            raise ValueError("plan step tool_args must be an object when tool_name is provided")
+    else:
+        if tool_args is not None:
+            raise ValueError("plan step tool_args must be null when tool_name is null")
+    if not isinstance(step.get("reason"), str) or not step["reason"].strip():
+        raise ValueError("plan step reason must be a non-empty string")
+    if not isinstance(step.get("is_final"), bool):
+        raise ValueError("plan step is_final must be boolean")
+
+
+def make_execution_plan(
+    plan_id: str,
+    total_steps: int,
+    plan_summary: str,
+    steps: list[dict],
+) -> dict:
+    plan = {
+        "plan_id": plan_id,
+        "total_steps": total_steps,
+        "plan_summary": plan_summary,
+        "steps": steps,
+    }
+    validate_execution_plan(plan)
+    return plan
+
+
+def validate_execution_plan(plan: dict) -> None:
+    if not isinstance(plan, dict):
+        raise ValueError("execution plan must be an object")
+    if not isinstance(plan.get("plan_id"), str) or not plan["plan_id"].strip():
+        raise ValueError("execution plan plan_id must be a non-empty string")
+    if not isinstance(plan.get("total_steps"), int) or plan["total_steps"] < 1:
+        raise ValueError("execution plan total_steps must be a positive integer")
+    if not isinstance(plan.get("plan_summary"), str) or not plan["plan_summary"].strip():
+        raise ValueError("execution plan plan_summary must be a non-empty string")
+    steps = plan.get("steps")
+    if not isinstance(steps, list) or len(steps) == 0:
+        raise ValueError("execution plan steps must be a non-empty array")
+    if len(steps) != plan["total_steps"]:
+        raise ValueError("execution plan total_steps must match steps array length")
+    seen_indices = set()
+    final_count = 0
+    for index, step in enumerate(steps):
+        validate_plan_step(step)
+        if step["step_index"] in seen_indices:
+            raise ValueError(f"duplicate step_index in plan: {step['step_index']}")
+        seen_indices.add(step["step_index"])
+        if step["step_index"] != index + 1:
+            raise ValueError(f"plan steps must be sequentially numbered, got {step['step_index']} at position {index + 1}")
+        if step["is_final"]:
+            final_count += 1
+    if final_count != 1:
+        raise ValueError("execution plan must contain exactly one final step")
