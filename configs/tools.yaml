@@ -10,6 +10,7 @@ toolsets:
     - local_file_search
     - table_analyzer
     - format_converter
+    - text_summarizer
 
 tools:
   calculator:
@@ -88,3 +89,19 @@ tools:
     returns:
       formatted_text: {type: string, description: Converted text.}
       generated_file_path: {type: string, description: Path of the generated output file.}
+
+  text_summarizer:
+    module: skills.text_summarizer
+    function: text_summarizer
+    description: Extract key sentences and keywords from text to generate a summary.
+    parameters:
+      text: {type: string, description: Input text to summarize.}
+      max_sentences: {type: integer, description: Maximum number of sentences in summary.}
+      max_keywords: {type: integer, description: Maximum number of keywords to extract.}
+      extract_keywords: {type: boolean, description: Whether to extract keywords.}
+    required: [text]
+    returns:
+      summary: {type: string, description: Generated summary text.}
+      key_sentences: {type: array, description: Key sentences extracted from text.}
+      keywords: {type: array, description: Keywords with frequency information.}
+      stats: {type: object, description: Text statistics (char count, word count, etc.).}

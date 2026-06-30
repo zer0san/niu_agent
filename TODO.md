@@ -118,6 +118,10 @@ python b1_agent_runtime.py \
 --batch
 ```
 
+## 历史消息压缩为摘要后继续对话
+
+
+
 # B4
 
 ## 支持Plan-and-Execute
