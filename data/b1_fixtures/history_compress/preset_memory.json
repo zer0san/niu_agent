@@ -1,0 +1,20 @@
+{
+  "status": "success",
+  "query": "你好，我想了解一下这个系统的基本功能。",
+  "selected_memory_docs": [
+    {
+      "memory_id": "mem_compress_multi_001",
+      "memory_type": "global",
+      "title": "历史消息压缩机制",
+      "path": "fixture://mem_compress_multi_001",
+      "content": "当对话历史消息总字符数达到 max_memory_chars 的 80% 时，系统会自动触发历史消息压缩机制。压缩时保留最近 N 轮完整对话，将中间历史消息通过文本摘要器压缩为一条摘要消息。",
+      "original_chars": 102,
+      "included_chars": 102,
+      "truncated": false
+    }
+  ],
+  "max_memory_chars": 200,
+  "total_chars": 102,
+  "truncated": false,
+  "errors": []
+}

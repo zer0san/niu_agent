@@ -120,6 +120,15 @@ python b1_agent_runtime.py \
 
 ## 历史消息压缩为摘要后继续对话
 
+压缩策略：
+- 保留头部：始终保留第一条system消息
+- 保留尾部：保留最近N轮完整对话
+- 压缩中部：将中间的历史消息转换为纯文本，调用text_summary生成摘要
+- 插入摘要：将摘要作为system角色消息插入，标注为历史对话摘要
+
+```
+python code/b1_agent_runtime.py --input data/b1_fixtures/history_compress/b1_fixture_input.json --outdir output/history_compress_test
+```
 
 
 # B4

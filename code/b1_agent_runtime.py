@@ -6,11 +6,77 @@ from copy import deepcopy
 from pathlib import Path
 from time import perf_counter
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 from common.io_utils import append_jsonl, read_json, read_text, read_yaml, write_json, write_text
 from common.logging_utils import now_iso
 from common.path_utils import resolve_cli_path, resolve_from_file
 from common.schemas import validate_ai_message
 from system_prompt_manager import SystemPromptManager
+from skills.text_summarizer import text_summarizer
+
+def _calculate_messages_chars(messages: list[dict]) -> int:
+    return sum(len(msg.get("content", "")) for msg in messages)
+
+
+def _compress_history(
+    messages: list[dict],
+    threshold: int,
+    keep_recent: int,
+    max_sentences: int,
+) -> tuple[list[dict], dict | None]:
+    if not messages:
+        return messages, None
+
+    total_chars = _calculate_messages_chars(messages)
+    if total_chars <= threshold:
+        return messages, None
+
+    system_msg = messages[0] if messages[0]["role"] == "system" else None
+    if system_msg:
+        history_to_compress = messages[1:-keep_recent] if keep_recent > 0 else messages[1:]
+        recent_messages = messages[-keep_recent:] if keep_recent > 0 else []
+    else:
+        history_to_compress = messages[:-keep_recent] if keep_recent > 0 else messages[:]
+        recent_messages = messages[-keep_recent:] if keep_recent > 0 else []
+
+    if not history_to_compress:
+        return messages, None
+
+    history_text = "\n".join(
+        f"{msg['role']}: {msg.get('content', '')}"
+        for msg in history_to_compress
+    )
+
+    summarizer_result = text_summarizer(history_text, max_sentences=max_sentences)
+    if summarizer_result["status"] != "success":
+        return messages, None
+
+    summary = summarizer_result["output"]["summary"]
+    summary_content = f"【历史对话摘要】\n{summary}"
+
+    compressed_messages = []
+    if system_msg:
+        compressed_messages.append(system_msg)
+    compressed_messages.append({"role": "system", "content": summary_content})
+    compressed_messages.extend(recent_messages)
+
+    compressed_chars = _calculate_messages_chars(compressed_messages)
+    if compressed_chars >= total_chars:
+        return messages, None
+
+    compression_info = {
+        "timestamp": now_iso(),
+        "original_messages_count": len(messages),
+        "compressed_messages_count": len(compressed_messages),
+        "original_chars": total_chars,
+        "compressed_chars": compressed_chars,
+        "compression_ratio": round((total_chars - compressed_chars) / total_chars, 4) if total_chars > 0 else 0,
+        "sentences_used": len(summarizer_result["output"]["key_sentences"]),
+    }
+
+    return compressed_messages, compression_info
+
 
 # 输入依赖
 def _validate_runtime_input(payload: dict) -> dict:
@@ -47,6 +113,19 @@ def _validate_runtime_input(payload: dict) -> dict:
     tool_failure_policy = payload.setdefault("tool_failure_policy", "continue")
     if tool_failure_policy not in {"continue", "abort"}:
         raise ValueError("tool_failure_policy must be continue or abort")
+
+    history_compress_keep_recent = payload.setdefault("history_compress_keep_recent", 2)
+    if not isinstance(history_compress_keep_recent, int) or isinstance(history_compress_keep_recent, bool) or history_compress_keep_recent < 0:
+        raise ValueError("history_compress_keep_recent must be a non-negative integer")
+
+    history_compress_max_sentences = payload.setdefault("history_compress_max_sentences", 3)
+    if not isinstance(history_compress_max_sentences, int) or isinstance(history_compress_max_sentences, bool) or history_compress_max_sentences < 1:
+        raise ValueError("history_compress_max_sentences must be a positive integer")
+
+    enable_history_compress = payload.setdefault("enable_history_compress", True)
+    if not isinstance(enable_history_compress, bool):
+        raise ValueError("enable_history_compress must be boolean")
+
     if execution_mode == "fixture":
         fixtures = payload.get("fixtures")
         if not isinstance(fixtures, dict):
@@ -201,17 +280,28 @@ def run_agent(
         fixture_data = _load_fixture_inputs(input_file, runtime)
         tools_schema = fixture_data["tools_schema"]
         mode = "fixture"
+
+        runtime.setdefault("history_compress_threshold", 160)
+        runtime.setdefault("history_compress_keep_recent", 2)
+        runtime.setdefault("history_compress_max_sentences", 3)
+        runtime.setdefault("enable_history_compress", True)
     else:
         if not tools_config or not memory_config or not model_config:
             raise ValueError("integrated mode requires tools_config, memory_config, and model_config")
         from b3_tool_layer import execute_tool_calls, get_tools_schema
-        from b5_memory import load_memory
+        from b5_memory import load_memory, get_history_compress_config
 
         tools_file = Path(tools_config).resolve()
         memory_file = Path(memory_config).resolve()
         model_file = Path(model_config).resolve()
         tools_schema = get_tools_schema(str(tools_file), runtime["toolset"], str(output_dir))
         mode = llm_mode or _default_llm_mode(model_file)
+
+        compress_config = get_history_compress_config(str(memory_file))
+        runtime["history_compress_threshold"] = compress_config.get("history_compress_threshold", 4000)
+        runtime["history_compress_keep_recent"] = compress_config.get("history_compress_keep_recent", 2)
+        runtime["history_compress_max_sentences"] = compress_config.get("history_compress_max_sentences", 3)
+        runtime["enable_history_compress"] = compress_config.get("enable_history_compress", True)
 
     def _process_user_input(user_input: str, messages: list[dict], llm_call_offset: int, user_index: int) -> dict:
         nonlocal fixture_data, tools_file, memory_file, tools_schema, mode
@@ -255,6 +345,7 @@ def run_agent(
         current_status = "success"
         current_error = None
         plan = None
+        history_compressions = []
 
         decision_mode = runtime.get("decision_mode", "react")
 
@@ -425,6 +516,18 @@ def run_agent(
                                 break
 
                         elif step["is_final"]:
+                            if runtime.get("enable_history_compress", True):
+                                compressed, info = _compress_history(
+                                    messages,
+                                    runtime["history_compress_threshold"],
+                                    runtime["history_compress_keep_recent"],
+                                    runtime["history_compress_max_sentences"],
+                                )
+                                if info:
+                                    messages = compressed
+                                    print(f"History compressed: {info['compression_ratio']*100:.1f}% reduction")
+                                    history_compressions.append(info)
+
                             llm_result = generate_ai_message(
                                 str(model_file),
                                 messages,
@@ -476,6 +579,18 @@ def run_agent(
             while True:
                 llm_calls = llm_call_offset + len(current_turns) + 1
                 turn_start = perf_counter()
+
+                if runtime.get("enable_history_compress", True):
+                    compressed, info = _compress_history(
+                        messages,
+                        runtime["history_compress_threshold"],
+                        runtime["history_compress_keep_recent"],
+                        runtime["history_compress_max_sentences"],
+                    )
+                    if info:
+                        messages = compressed
+                        print(f"History compressed: {info['compression_ratio']*100:.1f}% reduction")
+                        history_compressions.append(info)
 
                 if execution_mode == "fixture":
                     if llm_calls > len(fixture_data["ai_messages"]):
@@ -592,6 +707,7 @@ def run_agent(
             "llm_call_offset": llm_call_offset + len(current_turns),
             "selected_memory": selected_memory,
             "plan": plan,
+            "history_compressions": history_compressions,
         }
 
     messages: list[dict] = []
@@ -603,6 +719,7 @@ def run_agent(
     warnings = []
     llm_call_offset = 0
     selected_memory = None
+    all_history_compressions = []
 
     for user_idx, user_input in enumerate(user_inputs):
         print(f"Processing user_input[{user_idx}]: {user_input}")
@@ -612,6 +729,7 @@ def run_agent(
         all_tool_messages.extend(result["tool_messages"])
         all_final_answers.append(result["final_answer"])
         selected_memory = result["selected_memory"]
+        all_history_compressions.extend(result.get("history_compressions", []))
 
         if result["status"] != "success":
             overall_status = result["status"]
@@ -644,6 +762,7 @@ def run_agent(
         "user_input_count": len(user_inputs),
         "final_answers": all_final_answers,
         "system_prompt_switches": prompt_manager.get_prompt_history(),
+        "history_compressions": all_history_compressions,
     }
     write_json(trace, output_dir / "trace.json")
 

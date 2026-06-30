@@ -34,6 +34,34 @@ def _memory_paths(config_path: str | Path) -> dict[str, Path | int]:
     }
 
 
+def get_history_compress_config(config_path: str | Path) -> dict:
+    path = Path(config_path).resolve()
+    config = read_yaml(path)
+    if not isinstance(config, dict) or not isinstance(config.get("memory"), dict):
+        raise ValueError("memory.yaml must define a memory object")
+    memory = config["memory"]
+    max_chars = memory.get("max_memory_chars", 2000)
+    if not isinstance(max_chars, int) or isinstance(max_chars, bool) or max_chars <= 0:
+        max_chars = 2000
+    threshold = int(max_chars * 0.8)
+    keep_recent = memory.get("history_compress_keep_recent", 2)
+    max_sentences = memory.get("history_compress_max_sentences", 3)
+    enabled = memory.get("enable_history_compress", True)
+
+    if not isinstance(keep_recent, int) or isinstance(keep_recent, bool) or keep_recent < 0:
+        keep_recent = 2
+    if not isinstance(max_sentences, int) or isinstance(max_sentences, bool) or max_sentences < 1:
+        max_sentences = 3
+    if not isinstance(enabled, bool):
+        enabled = True
+
+    return {
+        "history_compress_keep_recent": keep_recent,
+        "history_compress_max_sentences": max_sentences,
+        "enable_history_compress": enabled,
+    }
+
+
 def _read_index(index_path: Path) -> dict:
     if not index_path.exists():
         return {}

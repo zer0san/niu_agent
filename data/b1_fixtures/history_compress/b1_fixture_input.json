@@ -1,0 +1,25 @@
+{
+  "execution_mode": "fixture",
+  "conversation_id": "conv_history_compress_multi_001",
+  "user_inputs": [
+    "你好，我想了解一下这个系统的基本功能。请详细介绍一下模型、工具和记忆这三个核心组件，包括它们各自的职责、工作原理和使用方式。",
+    "非常感谢你的介绍。我还有几个问题：1）工具调用的流程是怎样的？包括从请求生成到结果返回的完整过程。2）记忆分为哪些类型？每种类型的作用和存储方式是什么？3）系统如何处理长对话？有没有自动压缩机制？请逐一详细回答。",
+    "明白了，那系统在处理多轮对话时，如果历史消息太多会怎么样？有没有自动压缩机制？如果有的话，压缩的触发条件是什么，压缩后的消息是什么形式？",
+    "压缩后的消息还能恢复吗？压缩机制是如何保证信息不丢失的？摘要算法的原理是什么？",
+    "那如果我想手动控制压缩行为，可以吗？有哪些参数可以调整？这些参数的含义和默认值是什么？"
+  ],
+  "system_prompt_path": "../../../prompts/local_tool_agent.txt",
+  "toolset": "basic_tools",
+  "max_turns": 8,
+  "save_memory": "none",
+  "enable_history_compress": true,
+  "history_compress_threshold": 500,
+  "history_compress_keep_recent": 0,
+  "history_compress_max_sentences": 2,
+  "fixtures": {
+    "selected_memory_path": "preset_memory.json",
+    "tools_schema_path": "../../messages/tools_schema_basic.json",
+    "ai_messages_path": "preset_ai_messages.json",
+    "tool_messages_path": "preset_tool_messages.json"
+  }
+}
