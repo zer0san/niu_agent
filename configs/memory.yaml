@@ -4,3 +4,33 @@ memory:
   conversation_memory_dir: conversations
   index_path: memory_index.json
   max_memory_chars: 2000
+
+memory_summary:
+  enabled: true
+  max_source_chars: 800
+  max_summary_chars: 500
+  max_sentences: 3
+  max_keywords: 8
+
+keyword_memory:
+  enabled: true
+  backend: milvus
+  db_path: ../memory/milvus_memory.db
+  collection_name: memory_keyword_chunks
+  stopwords_path: ../memory/stopwords_baidu.txt
+  top_k: 3
+  chunk_size: 500
+  chunk_overlap: 80
+  inverted_index_algo: DAAT_MAXSCORE
+
+vector_memory:
+  enabled: true
+  backend: milvus
+  db_path: ../memory/milvus_memory.db
+  collection_name: memory_chunks
+  embedding_model_path: ../embedding_models/bge-small-zh-v1.5
+  embedding_dim: 512
+  query_instruction: "为这个句子生成表示以用于检索相关文章："
+  top_k: 3
+  chunk_size: 500
+  chunk_overlap: 80
