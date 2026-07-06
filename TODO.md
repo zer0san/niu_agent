@@ -89,10 +89,21 @@ python b1_agent_runtime.py \
 - 压缩中部：将中间的历史消息转换为纯文本，调用text_summary生成摘要
 - 插入摘要：将摘要作为system角色消息插入，标注为历史对话摘要
 
+fixture 测试
 ```
 python code/b1_agent_runtime.py \
     --input data/b1_fixtures/history_compress/b1_fixture_input.json \
     --outdir output/history_compress_test
+```
+
+全局测试
+```
+python b1_agent_runtime.py \
+--input ../data/runtime_input_compress_server.json \
+--outdir ../output/compress_server \
+--tools_config ../configs/tools.yaml \
+--memory_config ../configs/memory.yaml \
+--model_config ../configs/model.yaml 
 ```
 
 
