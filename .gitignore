@@ -25,3 +25,16 @@ outputs/tmp*/
 models/*
 !models/.gitkeep
 >>>>>>> 903382346c5c46d16aafca3d80956ea73e3a3b96
+data/*
+data/test_files/test_data.csv
+data/test_files/test_empty.txt
+data/test_files/TEST_REPORT.md
+data/test_files/test_sample.md
+data/test_files/test_sample.txt
+data/test_files/test_special_chars.txt
+data/test_files/test_text_summarizer.py
+data/test_files/TEXT_SUMMARIZER_TEST_REPORT.md
+B2_poster.html
+requirements-llm.txt
+requirements.txt
+code/b2_batch_test.py
