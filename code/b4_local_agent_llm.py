@@ -112,10 +112,36 @@ def _candidate_to_message(candidate: dict) -> tuple[dict, dict]:
     validate_ai_message(message)
     has_content = bool(message["content"].strip())
     has_tool_calls = bool(message["tool_calls"])
-    if has_content == has_tool_calls:
-        raise ValueError("model output must contain either final content or tool calls, but not both")
+    if has_content and has_tool_calls:
+        content_len = len(message["content"].strip())
+        if content_len < 30:
+            message["content"] = ""
+            has_content = False
+        else:
+            message["tool_calls"] = []
+            has_tool_calls = False
+    elif not has_content and not has_tool_calls:
+        raise ValueError("model output must contain either final content or tool calls")
     parsed_candidate = {"content": message["content"], "tool_calls": message["tool_calls"]}
     return parsed_candidate, message
+
+# 从markdown代码块中提取JSON
+def _parse_json_from_code_fence(raw_text: str, original_error: json.JSONDecodeError) -> dict:
+    pattern = r"```json\s*([\s\S]*?)\s*```"
+    match = re.search(pattern, raw_text)
+    if match:
+        try:
+            return json.loads(match.group(1))
+        except json.JSONDecodeError:
+            pass
+    raise original_error
+
+# 处理纯文本输出的回退策略
+def _parse_plain_text_fallback(raw_text: str, original_error: json.JSONDecodeError) -> dict:
+    text = raw_text.strip()
+    if not text:
+        raise original_error
+    return {"content": text, "tool_calls": []}
 
 # 组合多种解析策略
 def _parse_model_output(raw_text: str) -> tuple[dict, dict]:
@@ -125,7 +151,13 @@ def _parse_model_output(raw_text: str) -> tuple[dict, dict]:
         try:
             candidate = _parse_json_with_backtick_tail(raw_text, exc)
         except json.JSONDecodeError:
-            candidate = _parse_tool_calls_fragment(raw_text, exc)
+            try:
+                candidate = _parse_tool_calls_fragment(raw_text, exc)
+            except (json.JSONDecodeError, ValueError):
+                try:
+                    candidate = _parse_json_from_code_fence(raw_text, exc)
+                except json.JSONDecodeError:
+                    candidate = _parse_plain_text_fallback(raw_text, exc)
     return _candidate_to_message(candidate)
 
 # 将字符串类型的dtype转换为对应的torch.dtype
@@ -372,6 +404,13 @@ def generate_ai_message(
         ai_message = make_ai_message(PARSE_ERROR_CONTENT, [])
         status = "error"
         error = {"type": type(exc).__name__, "message": str(exc)}
+        print(
+            f"LLM parse failed: {type(exc).__name__}: {exc}\n"
+            f"Raw output (first 300 chars): {raw_text[:300]}\n"
+            f"Raw output repr (first 200 chars): {repr(raw_text[:200])}",
+            file=sys.stderr,
+            flush=True,
+        )
     raw_record = {
         "mode": "prompt_json",
         "backend": backend,

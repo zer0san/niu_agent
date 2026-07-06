@@ -3,7 +3,7 @@
     "system_prompt_path": "../prompts/local_tool_agent.txt",
     "toolset": "basic_tools",
     "max_turns": 5,
-    "save_memory": "none",
+    "save_memory": "conversation",
     "execution_mode": "integrated",
     "decision_mode": "plan_and_execute",
     "planner_prompt_path": "../prompts/planner.txt",
