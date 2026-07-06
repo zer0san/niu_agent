@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
+import math
 import re
+import sqlite3
 import sys
 from collections import Counter
 from pathlib import Path
@@ -14,6 +15,8 @@ from common.path_utils import resolve_cli_path, resolve_from_file
 
 _EMBEDDING_MODEL_CACHE = {}
 _STOPWORDS_CACHE = {}
+_JIEBA_USERDICT_CACHE = set()
+_KEYWORD_SCHEMA_VERSION = "1"
 
 
 def _memory_paths(config_path: str | Path) -> dict[str, Path | int]:
@@ -56,8 +59,11 @@ def _vector_settings(config_path: str | Path) -> dict:
         "embedding_dim": int(vector.get("embedding_dim", 512)),
         "query_instruction": vector.get("query_instruction", "为这个句子生成表示以用于检索相关文章："),
         "top_k": int(vector.get("top_k", 3)),
+        "candidate_k": int(vector.get("candidate_k", max(int(vector.get("top_k", 3)) * 4, 20))),
         "chunk_size": int(vector.get("chunk_size", 500)),
         "chunk_overlap": int(vector.get("chunk_overlap", 80)),
+        "dedupe_by_memory_id": bool(vector.get("dedupe_by_memory_id", True)),
+        "title_match_boost": float(vector.get("title_match_boost", 0.05)),
     }
 
 
@@ -69,14 +75,38 @@ def _keyword_settings(config_path: str | Path) -> dict:
         keyword = {}
     return {
         "enabled": bool(keyword.get("enabled", False)),
-        "backend": keyword.get("backend", "milvus"),
-        "db_path": keyword.get("db_path", "../memory/milvus_memory.db"),
-        "collection_name": keyword.get("collection_name", "memory_keyword_chunks"),
+        "backend": keyword.get("backend", "sqlite_bm25"),
+        "index_path": keyword.get("index_path", "keyword_bm25.sqlite"),
         "stopwords_path": keyword.get("stopwords_path", "../memory/stopwords_baidu.txt"),
+        "userdict_path": keyword.get("userdict_path"),
         "top_k": int(keyword.get("top_k", 3)),
+        "candidate_k": int(keyword.get("candidate_k", max(int(keyword.get("top_k", 3)) * 4, 20))),
         "chunk_size": int(keyword.get("chunk_size", 500)),
         "chunk_overlap": int(keyword.get("chunk_overlap", 80)),
-        "inverted_index_algo": keyword.get("inverted_index_algo", "DAAT_MAXSCORE"),
+        "bm25_k1": float(keyword.get("bm25_k1", 1.5)),
+        "bm25_b": float(keyword.get("bm25_b", 0.75)),
+        "ngram_fallback_enabled": bool(keyword.get("ngram_fallback_enabled", False)),
+        "ngram_size": int(keyword.get("ngram_size", 2)),
+    }
+
+
+def _fusion_settings(config_path: str | Path) -> dict:
+    path = Path(config_path).resolve()
+    config = read_yaml(path)
+    fusion = config.get("retrieval_fusion", {}) if isinstance(config, dict) else {}
+    if not isinstance(fusion, dict):
+        fusion = {}
+    keyword = _keyword_settings(config_path)
+    vector = _vector_settings(config_path)
+    return {
+        "enabled": bool(fusion.get("enabled", True)),
+        "strategy": fusion.get("strategy", "rrf"),
+        "final_top_k": int(fusion.get("final_top_k", max(keyword["top_k"], vector["top_k"]))),
+        "rrf_k": int(fusion.get("rrf_k", 60)),
+        "keyword_weight": float(fusion.get("keyword_weight", 1.0)),
+        "vector_weight": float(fusion.get("vector_weight", 1.0)),
+        "dedupe_by_memory_id": bool(fusion.get("dedupe_by_memory_id", True)),
+        "title_match_boost": float(fusion.get("title_match_boost", 0.05)),
     }
 
 
@@ -121,9 +151,43 @@ def _load_stopwords(config_path: str | Path) -> set[str]:
     return stopwords
 
 
-def _keyword_terms(text: str, stopwords: set[str] | None = None) -> list[str]:
+def _ensure_jieba(config_path: str | Path | None = None):
+    try:
+        import jieba
+    except ImportError as exc:
+        raise ImportError("jieba is required for keyword_memory backend sqlite_bm25") from exc
+
+    if config_path is not None:
+        settings = _keyword_settings(config_path)
+        userdict_path = settings.get("userdict_path")
+        if isinstance(userdict_path, str) and userdict_path.strip():
+            resolved = resolve_from_file(userdict_path, Path(config_path).resolve())
+            cache_key = str(resolved)
+            if resolved.is_file() and cache_key not in _JIEBA_USERDICT_CACHE:
+                jieba.load_userdict(str(resolved))
+                _JIEBA_USERDICT_CACHE.add(cache_key)
+    return jieba
+
+
+def _keyword_char_ngrams(token: str, size: int) -> list[str]:
+    if size <= 0 or len(token) < size:
+        return []
+    return [token[index : index + size] for index in range(0, len(token) - size + 1)]
+
+
+def _keyword_terms(
+    text: str,
+    stopwords: set[str] | None = None,
+    config_path: str | Path | None = None,
+    allow_ngram_fallback: bool | None = None,
+) -> list[str]:
     if not text:
         return []
+    jieba = _ensure_jieba(config_path)
+    settings = _keyword_settings(config_path) if config_path is not None else {}
+    if allow_ngram_fallback is None:
+        allow_ngram_fallback = bool(settings.get("ngram_fallback_enabled", False))
+    ngram_size = int(settings.get("ngram_size", 2))
     stopwords = stopwords or set()
     terms = []
     for match in re.finditer(r"[A-Za-z0-9_]+|[\u4e00-\u9fff]+", text.lower()):
@@ -132,11 +196,15 @@ def _keyword_terms(text: str, stopwords: set[str] | None = None) -> list[str]:
             if len(token) > 1 and token not in stopwords:
                 terms.append(token)
             continue
-        for size in (2, 3, 4):
-            for index in range(0, max(len(token) - size + 1, 0)):
-                gram = token[index : index + size]
-                if gram not in stopwords:
-                    terms.append(gram)
+        chinese_terms = []
+        for segment in jieba.cut(token, cut_all=False):
+            term = segment.strip().lower()
+            if len(term) > 1 and term not in stopwords:
+                chinese_terms.append(term)
+        if chinese_terms:
+            terms.extend(chinese_terms)
+        elif allow_ngram_fallback:
+            terms.extend(gram for gram in _keyword_char_ngrams(token, ngram_size) if gram not in stopwords)
     return terms
 
 ## 把json字符串解析成python对象
@@ -291,48 +359,116 @@ def _load_milvus_collection(client, collection_name: str) -> None:
     client.load_collection(collection_name=collection_name)
 
 
-def _keyword_sparse_vector(text: str, config_path: str | Path) -> dict[int, float]:
-    stopwords = _load_stopwords(config_path)
-    term_counts = Counter(_keyword_terms(text, stopwords))
-    if not term_counts:
-        return {}
-    norm = sum(count * count for count in term_counts.values()) ** 0.5 or 1.0
-    sparse = {}
-    for term, count in term_counts.items():
-        digest = hashlib.blake2b(term.encode("utf-8"), digest_size=8).digest()
-        term_id = int.from_bytes(digest, "big") % 2147483647
-        sparse[term_id] = sparse.get(term_id, 0.0) + count / norm
-    return sparse
-
-
-def _get_keyword_milvus_client(config_path: str | Path):
-    from pymilvus import DataType, MilvusClient
-
+def _keyword_sqlite_path(config_path: str | Path, paths: dict[str, Path | int] | None = None) -> Path:
     settings = _keyword_settings(config_path)
-    if settings["backend"] != "milvus":
-        raise ValueError("keyword_memory.backend must be milvus")
-    client = _milvus_client_for_db(config_path, settings["db_path"])
-    collection_name = settings["collection_name"]
-    if not client.has_collection(collection_name):
-        schema = MilvusClient.create_schema(auto_id=False, enable_dynamic_field=False)
-        schema.add_field(field_name="chunk_id", datatype=DataType.VARCHAR, is_primary=True, max_length=256)
-        schema.add_field(field_name="sparse", datatype=DataType.SPARSE_FLOAT_VECTOR)
-        schema.add_field(field_name="memory_id", datatype=DataType.VARCHAR, max_length=128)
-        schema.add_field(field_name="memory_type", datatype=DataType.VARCHAR, max_length=64)
-        schema.add_field(field_name="conversation_id", datatype=DataType.VARCHAR, max_length=128)
-        schema.add_field(field_name="title", datatype=DataType.VARCHAR, max_length=512)
-        schema.add_field(field_name="path", datatype=DataType.VARCHAR, max_length=512)
-        schema.add_field(field_name="content", datatype=DataType.VARCHAR, max_length=8192)
-        schema.add_field(field_name="chunk_index", datatype=DataType.INT64)
-        index_params = client.prepare_index_params()
-        index_params.add_index(
-            field_name="sparse",
-            index_type="SPARSE_INVERTED_INDEX",
-            metric_type="IP",
-            params={"inverted_index_algo": settings["inverted_index_algo"]},
-        )
-        client.create_collection(collection_name=collection_name, schema=schema, index_params=index_params)
-    return client
+    index_path = Path(settings["index_path"])
+    if index_path.is_absolute():
+        return index_path
+    memory_root = paths["root"] if paths is not None else _memory_paths(config_path)["root"]
+    return (memory_root / index_path).resolve()
+
+
+def _keyword_sqlite_connect(config_path: str | Path, paths: dict[str, Path | int] | None = None) -> sqlite3.Connection:
+    db_path = _keyword_sqlite_path(config_path, paths)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(db_path)
+    connection.row_factory = sqlite3.Row
+    return connection
+
+
+def _reset_keyword_schema(connection: sqlite3.Connection) -> None:
+    connection.executescript(
+        """
+        DROP TABLE IF EXISTS postings;
+        DROP TABLE IF EXISTS terms;
+        DROP TABLE IF EXISTS chunks;
+        DROP TABLE IF EXISTS stats;
+        """
+    )
+
+
+def _ensure_keyword_schema(connection: sqlite3.Connection) -> None:
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS chunks (
+            chunk_id TEXT PRIMARY KEY,
+            memory_id TEXT NOT NULL,
+            memory_type TEXT,
+            conversation_id TEXT,
+            title TEXT,
+            path TEXT,
+            content TEXT,
+            chunk_index INTEGER NOT NULL,
+            chunk_len INTEGER NOT NULL,
+            updated_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS postings (
+            term TEXT NOT NULL,
+            chunk_id TEXT NOT NULL,
+            tf INTEGER NOT NULL,
+            PRIMARY KEY (term, chunk_id)
+        );
+        CREATE TABLE IF NOT EXISTS terms (
+            term TEXT PRIMARY KEY,
+            df INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS stats (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_postings_term ON postings(term);
+        CREATE INDEX IF NOT EXISTS idx_chunks_memory_id ON chunks(memory_id);
+        """
+    )
+    version = connection.execute("SELECT value FROM stats WHERE key = 'schema_version'").fetchone()
+    if version is not None and version["value"] != _KEYWORD_SCHEMA_VERSION:
+        _reset_keyword_schema(connection)
+        _ensure_keyword_schema(connection)
+        return
+    connection.execute(
+        "INSERT OR REPLACE INTO stats(key, value) VALUES ('schema_version', ?)",
+        (_KEYWORD_SCHEMA_VERSION,),
+    )
+
+
+def _sync_keyword_stats(connection: sqlite3.Connection) -> dict:
+    connection.execute("DELETE FROM terms")
+    connection.execute(
+        """
+        INSERT INTO terms(term, df)
+        SELECT term, COUNT(*) AS df
+        FROM postings
+        GROUP BY term
+        """
+    )
+    total_chunks = int(connection.execute("SELECT COUNT(*) AS count FROM chunks").fetchone()["count"])
+    avg_chunk_len_row = connection.execute("SELECT AVG(chunk_len) AS avg_len FROM chunks").fetchone()
+    avg_chunk_len = float(avg_chunk_len_row["avg_len"] or 0.0)
+    connection.execute("INSERT OR REPLACE INTO stats(key, value) VALUES ('total_chunks', ?)", (str(total_chunks),))
+    connection.execute("INSERT OR REPLACE INTO stats(key, value) VALUES ('avg_chunk_len', ?)", (str(avg_chunk_len),))
+    connection.execute(
+        "INSERT OR REPLACE INTO stats(key, value) VALUES ('schema_version', ?)",
+        (_KEYWORD_SCHEMA_VERSION,),
+    )
+    return {"total_chunks": total_chunks, "avg_chunk_len": avg_chunk_len}
+
+
+def _delete_keyword_memory_rows(connection: sqlite3.Connection, memory_id: str) -> None:
+    connection.execute(
+        "DELETE FROM postings WHERE chunk_id IN (SELECT chunk_id FROM chunks WHERE memory_id = ?)",
+        (memory_id,),
+    )
+    connection.execute("DELETE FROM chunks WHERE memory_id = ?", (memory_id,))
+
+
+def _keyword_stats(connection: sqlite3.Connection) -> dict:
+    rows = connection.execute("SELECT key, value FROM stats").fetchall()
+    stats = {row["key"]: row["value"] for row in rows}
+    return {
+        "total_chunks": int(float(stats.get("total_chunks", "0"))),
+        "avg_chunk_len": float(stats.get("avg_chunk_len", "0") or 0.0),
+        "schema_version": stats.get("schema_version"),
+    }
 
 
 def _index_keyword_memory_document(
@@ -347,58 +483,92 @@ def _index_keyword_memory_document(
     settings = _keyword_settings(config_path)
     if not settings["enabled"]:
         return {"enabled": False, "status": "skipped"}
-    try:
-        client = _get_keyword_milvus_client(config_path)
-        rows = []
-        chunks = _chunk_text(content, settings["chunk_size"], settings["chunk_overlap"])
-        for chunk_index, chunk in enumerate(chunks):
-            sparse = _keyword_sparse_vector(chunk, config_path)
-            if not sparse:
-                continue
-            rows.append(
-                {
-                    "chunk_id": f"{memory_id}::keyword_chunk_{chunk_index}",
-                    "sparse": sparse,
-                    "memory_id": memory_id,
-                    "memory_type": memory_type,
-                    "conversation_id": conversation_id or "",
-                    "title": title,
-                    "path": relative_path,
-                    "content": chunk[:8192],
-                    "chunk_index": chunk_index,
-                }
-            )
-        collection_name = settings["collection_name"]
-        escaped_memory_id = memory_id.replace("\\", "\\\\").replace('"', '\\"')
-        client.delete(collection_name=collection_name, filter=f'memory_id == "{escaped_memory_id}"')
-        if rows:
-            client.insert(collection_name=collection_name, data=rows)
+    if settings["backend"] != "sqlite_bm25":
         return {
             "enabled": True,
-            "backend": "milvus",
-            "index_type": "SPARSE_INVERTED_INDEX",
+            "backend": settings["backend"],
+            "status": "error",
+            "error": {"type": "ValueError", "message": "keyword_memory.backend must be sqlite_bm25"},
+        }
+    try:
+        with _keyword_sqlite_connect(config_path) as connection:
+            _ensure_keyword_schema(connection)
+            _delete_keyword_memory_rows(connection, memory_id)
+            stopwords = _load_stopwords(config_path)
+            rows = []
+            postings = []
+            chunks = _chunk_text(content, settings["chunk_size"], settings["chunk_overlap"])
+            for chunk_index, chunk in enumerate(chunks):
+                term_counts = Counter(_keyword_terms(chunk, stopwords, config_path))
+                if not term_counts:
+                    continue
+                chunk_id = f"{memory_id}::keyword_chunk_{chunk_index}"
+                chunk_len = sum(term_counts.values())
+                rows.append(
+                    (
+                        chunk_id,
+                        memory_id,
+                        memory_type,
+                        conversation_id or "",
+                        title,
+                        relative_path,
+                        chunk[:8192],
+                        chunk_index,
+                        chunk_len,
+                        now_iso(),
+                    )
+                )
+                postings.extend((term, chunk_id, count) for term, count in term_counts.items())
+            if rows:
+                connection.executemany(
+                    """
+                    INSERT OR REPLACE INTO chunks(
+                        chunk_id, memory_id, memory_type, conversation_id, title, path,
+                        content, chunk_index, chunk_len, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    rows,
+                )
+            if postings:
+                connection.executemany(
+                    "INSERT OR REPLACE INTO postings(term, chunk_id, tf) VALUES (?, ?, ?)",
+                    postings,
+                )
+            stats = _sync_keyword_stats(connection)
+            connection.commit()
+        return {
+            "enabled": True,
+            "backend": "sqlite_bm25",
+            "index_type": "sqlite_inverted_index",
             "status": "success",
             "chunk_count": len(rows),
-            "collection_name": collection_name,
+            "term_count": len(postings),
+            "total_chunks": stats["total_chunks"],
+            "index_path": str(_keyword_sqlite_path(config_path)),
         }
     except Exception as exc:
         return {
             "enabled": True,
-            "backend": "milvus",
-            "index_type": "SPARSE_INVERTED_INDEX",
+            "backend": "sqlite_bm25",
+            "index_type": "sqlite_inverted_index",
             "status": "error",
             "error": {"type": type(exc).__name__, "message": str(exc)},
         }
 
 
-def _ensure_keyword_index(config_path: str, paths: dict[str, Path | int], index: dict) -> dict:
-    settings = _keyword_settings(config_path)
-    if not settings["enabled"]:
-        return {"enabled": False, "status": "skipped"}
+def _rebuild_keyword_index(config_path: str, paths: dict[str, Path | int], index: dict) -> dict:
+    with _keyword_sqlite_connect(config_path, paths) as connection:
+        _ensure_keyword_schema(connection)
+        _reset_keyword_schema(connection)
+        _ensure_keyword_schema(connection)
+        connection.commit()
     indexed = 0
+    errors = []
     for memory_id in sorted(index):
         document, error = _memory_document_from_index(paths, index, memory_id)
         if error:
+            errors.append(error)
             continue
         metadata = document["metadata"]
         result = _index_keyword_memory_document(
@@ -412,13 +582,237 @@ def _ensure_keyword_index(config_path: str, paths: dict[str, Path | int], index:
         )
         if result.get("status") == "success":
             indexed += result.get("chunk_count", 0)
+        else:
+            errors.append(result.get("error", {"type": "KeywordIndexError", "message": str(result)}))
     return {
         "enabled": True,
-        "backend": "milvus",
-        "index_type": "SPARSE_INVERTED_INDEX",
-        "status": "synced",
+        "backend": "sqlite_bm25",
+        "index_type": "sqlite_inverted_index",
+        "status": "rebuilt" if not errors else "partial",
         "row_count": indexed,
+        "errors": errors,
+        "index_path": str(_keyword_sqlite_path(config_path, paths)),
     }
+
+
+def _ensure_keyword_index(config_path: str, paths: dict[str, Path | int], index: dict) -> dict:
+    settings = _keyword_settings(config_path)
+    if not settings["enabled"]:
+        return {"enabled": False, "status": "skipped"}
+    if settings["backend"] != "sqlite_bm25":
+        raise ValueError("keyword_memory.backend must be sqlite_bm25")
+    db_path = _keyword_sqlite_path(config_path, paths)
+    if not db_path.exists():
+        return _rebuild_keyword_index(config_path, paths, index)
+    with _keyword_sqlite_connect(config_path, paths) as connection:
+        _ensure_keyword_schema(connection)
+        stats = _keyword_stats(connection)
+        row_count = stats["total_chunks"]
+        connection.commit()
+    if row_count <= 0:
+        return _rebuild_keyword_index(config_path, paths, index)
+    return {
+        "enabled": True,
+        "backend": "sqlite_bm25",
+        "index_type": "sqlite_inverted_index",
+        "status": "ready",
+        "row_count": row_count,
+        "index_path": str(db_path),
+    }
+
+
+def _bm25_score(tf: int, df: int, total_chunks: int, chunk_len: int, avg_chunk_len: float, k1: float, b: float) -> float:
+    if tf <= 0 or df <= 0 or total_chunks <= 0:
+        return 0.0
+    avg_len = avg_chunk_len if avg_chunk_len > 0 else 1.0
+    idf = math.log(1.0 + (total_chunks - df + 0.5) / (df + 0.5))
+    denominator = tf + k1 * (1.0 - b + b * (chunk_len / avg_len))
+    return idf * ((tf * (k1 + 1.0)) / denominator)
+
+
+def _keyword_bm25_hits(
+    config_path: str,
+    paths: dict[str, Path | int],
+    query_terms: list[str],
+) -> list[dict]:
+    settings = _keyword_settings(config_path)
+    term_counts = Counter(query_terms)
+    with _keyword_sqlite_connect(config_path, paths) as connection:
+        stats = _keyword_stats(connection)
+        if stats["total_chunks"] <= 0:
+            return []
+        scores = {}
+        matched_terms: dict[str, set[str]] = {}
+        chunk_rows = {}
+        for term, query_tf in term_counts.items():
+            rows = connection.execute(
+                """
+                SELECT
+                    p.tf,
+                    t.df,
+                    c.chunk_id,
+                    c.memory_id,
+                    c.memory_type,
+                    c.conversation_id,
+                    c.title,
+                    c.path,
+                    c.content,
+                    c.chunk_index,
+                    c.chunk_len
+                FROM postings p
+                JOIN terms t ON t.term = p.term
+                JOIN chunks c ON c.chunk_id = p.chunk_id
+                WHERE p.term = ?
+                """,
+                (term,),
+            ).fetchall()
+            for row in rows:
+                score = _bm25_score(
+                    int(row["tf"]),
+                    int(row["df"]),
+                    stats["total_chunks"],
+                    int(row["chunk_len"]),
+                    stats["avg_chunk_len"],
+                    settings["bm25_k1"],
+                    settings["bm25_b"],
+                )
+                chunk_id = row["chunk_id"]
+                scores[chunk_id] = scores.get(chunk_id, 0.0) + score * query_tf
+                matched_terms.setdefault(chunk_id, set()).add(term)
+                chunk_rows[chunk_id] = row
+        hits = []
+        for chunk_id, score in sorted(scores.items(), key=lambda item: item[1], reverse=True):
+            row = chunk_rows[chunk_id]
+            hits.append(
+                {
+                    "score": score,
+                    "matched_terms": sorted(matched_terms.get(chunk_id, set())),
+                    "entity": {
+                        "chunk_id": row["chunk_id"],
+                        "memory_id": row["memory_id"],
+                        "memory_type": row["memory_type"],
+                        "conversation_id": row["conversation_id"],
+                        "title": row["title"],
+                        "path": row["path"],
+                        "content": row["content"],
+                        "chunk_index": row["chunk_index"],
+                    },
+                }
+            )
+    return hits
+
+
+def _candidate_key(candidate: dict, dedupe_by_memory_id: bool) -> str:
+    memory_id = candidate.get("memory_id")
+    if dedupe_by_memory_id and memory_id:
+        return f"memory::{memory_id}"
+    return f"chunk::{candidate.get('chunk_id') or memory_id or id(candidate)}"
+
+
+def _title_match_bonus(title: str | None, query_terms: list[str], boost: float) -> float:
+    if not title or not query_terms or boost <= 0:
+        return 0.0
+    lowered = title.lower()
+    return boost if any(term and term.lower() in lowered for term in query_terms) else 0.0
+
+
+def _keyword_memory_candidates(
+    config_path: str,
+    paths: dict[str, Path | int],
+    index: dict,
+    query: str,
+    existing_memory_ids: set[str] | None = None,
+) -> tuple[list[dict], list[dict], list[str]]:
+    settings = _keyword_settings(config_path)
+    if not settings["enabled"] or not query:
+        return [], [], []
+    existing_memory_ids = existing_memory_ids or set()
+    query_terms = _keyword_terms(query, _load_stopwords(config_path), config_path)
+    if not query_terms:
+        return [], [], []
+
+    try:
+        ready = _ensure_keyword_index(config_path, paths, index)
+        if int(ready.get("row_count", 0)) == 0:
+            return [], [], query_terms
+        hits = _keyword_bm25_hits(config_path, paths, query_terms)
+    except Exception as exc:
+        return (
+            [],
+            [{"type": type(exc).__name__, "message": str(exc), "source": "keyword_memory"}],
+            query_terms,
+        )
+
+    candidates = []
+    for rank, hit in enumerate(hits, start=1):
+        if len(candidates) >= settings["candidate_k"]:
+            break
+        metadata = hit.get("entity", {}) or {}
+        memory_id = metadata.get("memory_id")
+        if memory_id in existing_memory_ids:
+            continue
+        text = metadata.get("content", "")
+        candidates.append(
+            {
+                "source": "keyword",
+                "rank": rank,
+                "chunk_id": metadata.get("chunk_id"),
+                "memory_id": memory_id,
+                "memory_type": metadata.get("memory_type"),
+                "conversation_id": metadata.get("conversation_id"),
+                "title": metadata.get("title", memory_id or "Keyword Memory Chunk"),
+                "path": metadata.get("path", ""),
+                "content": text,
+                "original_chars": len(text),
+                "chunk_index": metadata.get("chunk_index"),
+                "source_scores": {"keyword": float(hit.get("score", 0.0))},
+                "matched_terms": hit.get("matched_terms", []),
+                "query_terms": query_terms[:20],
+            }
+        )
+    return candidates, [], query_terms
+
+
+def _finalize_retrieval_candidates(
+    candidates: list[dict],
+    remaining_chars: int,
+    final_top_k: int,
+    retrieval_type: str,
+    query_terms: list[str],
+) -> tuple[list[dict], bool]:
+    docs = []
+    used = 0
+    any_truncated = False
+    for candidate in candidates:
+        if len(docs) >= final_top_k or used >= remaining_chars:
+            break
+        text = candidate.get("content", "")
+        included = text[: remaining_chars - used]
+        used += len(included)
+        truncated = len(included) < len(text)
+        any_truncated = any_truncated or truncated
+        retrieval = {
+            "type": retrieval_type,
+            "chunk_id": candidate.get("chunk_id"),
+            "chunk_index": candidate.get("chunk_index"),
+            "query_terms": query_terms[:20],
+        }
+        retrieval.update(candidate.get("retrieval", {}))
+        docs.append(
+            {
+                "memory_id": candidate.get("memory_id") or f"{retrieval_type}_chunk_{len(docs)}",
+                "memory_type": candidate.get("memory_type"),
+                "conversation_id": candidate.get("conversation_id"),
+                "title": candidate.get("title"),
+                "path": candidate.get("path", ""),
+                "content": included,
+                "original_chars": len(text),
+                "included_chars": len(included),
+                "truncated": truncated,
+                "retrieval": retrieval,
+            }
+        )
+    return docs, any_truncated
 
 
 def _search_keyword_memory(
@@ -432,82 +826,27 @@ def _search_keyword_memory(
     settings = _keyword_settings(config_path)
     if not settings["enabled"] or not query or remaining_chars <= 0:
         return [], [], False
-    existing_memory_ids = existing_memory_ids or set()
-    query_sparse = _keyword_sparse_vector(query, config_path)
-    if not query_sparse:
-        return [], [], False
-
-    try:
-        ready = _ensure_keyword_index(config_path, paths, index)
-        if int(ready.get("row_count", 0)) == 0:
-            return [], [], False
-        client = _get_keyword_milvus_client(config_path)
-        _load_milvus_collection(client, settings["collection_name"])
-        result = client.search(
-            collection_name=settings["collection_name"],
-            data=[query_sparse],
-            anns_field="sparse",
-            limit=settings["top_k"] + len(existing_memory_ids),
-            search_params={"metric_type": "IP", "params": {}},
-            output_fields=[
-                "chunk_id",
-                "memory_id",
-                "memory_type",
-                "conversation_id",
-                "title",
-                "path",
-                "content",
-                "chunk_index",
-            ],
-        )
-    except Exception as exc:
-        return (
-            [],
-            [{"type": type(exc).__name__, "message": str(exc), "source": "keyword_memory"}],
-            False,
-        )
-
-    docs = []
-    used = 0
-    any_truncated = False
-    hits = result[0] if result else []
-    query_terms = _keyword_terms(query, _load_stopwords(config_path))
-    for hit in hits:
-        metadata = hit.get("entity", {}) or {}
-        memory_id = metadata.get("memory_id")
-        if memory_id in existing_memory_ids:
-            continue
-        if len(docs) >= settings["top_k"]:
-            break
-        if used >= remaining_chars:
-            break
-        text = metadata.get("content", "")
-        included = text[: remaining_chars - used]
-        used += len(included)
-        truncated = len(included) < len(text)
-        any_truncated = any_truncated or truncated
-        docs.append(
-            {
-                "memory_id": memory_id or f"keyword_chunk_{len(docs)}",
-                "memory_type": metadata.get("memory_type"),
-                "conversation_id": metadata.get("conversation_id"),
-                "title": metadata.get("title", memory_id or "Keyword Memory Chunk"),
-                "path": metadata.get("path", ""),
-                "content": included,
-                "original_chars": len(text),
-                "included_chars": len(included),
-                "truncated": truncated,
-                "retrieval": {
-                    "type": "milvus_sparse_inverted",
-                    "index_type": "SPARSE_INVERTED_INDEX",
-                    "chunk_id": metadata.get("chunk_id") or hit.get("id"),
-                    "chunk_index": metadata.get("chunk_index"),
-                    "score": hit.get("distance"),
-                    "query_terms": query_terms[:20],
-                },
-            }
-        )
-    return docs, [], any_truncated
+    candidates, errors, query_terms = _keyword_memory_candidates(
+        config_path,
+        paths,
+        index,
+        query,
+        existing_memory_ids,
+    )
+    for candidate in candidates:
+        candidate["retrieval"] = {
+            "index_type": "sqlite_inverted_index",
+            "score": round(float(candidate.get("source_scores", {}).get("keyword", 0.0)), 6),
+            "matched_terms": candidate.get("matched_terms", []),
+        }
+    docs, any_truncated = _finalize_retrieval_candidates(
+        candidates,
+        remaining_chars,
+        settings["top_k"],
+        "sqlite_bm25",
+        query_terms,
+    )
+    return docs, errors, any_truncated
 
 
 def _chunk_text(text: str, chunk_size: int, chunk_overlap: int) -> list[str]:
@@ -664,6 +1003,116 @@ def _ensure_vector_index(config_path: str, paths: dict[str, Path | int], index: 
     return {"enabled": True, "backend": "milvus", "status": "rebuilt", "row_count": indexed}
 
 
+def _vector_distance_to_similarity(distance: object, metric_type: str) -> float:
+    try:
+        value = float(distance)
+    except (TypeError, ValueError):
+        return 0.0
+    metric = metric_type.upper()
+    if metric in {"COSINE", "IP"}:
+        return value
+    if metric == "L2":
+        return 1.0 / (1.0 + max(value, 0.0))
+    return value
+
+
+def _normalize_vector_similarity(similarity: float, metric_type: str) -> float:
+    metric = metric_type.upper()
+    if metric == "COSINE":
+        return max(0.0, min((similarity + 1.0) / 2.0, 1.0))
+    if metric == "IP":
+        return max(0.0, min(similarity, 1.0))
+    if metric == "L2":
+        return max(0.0, min(similarity, 1.0))
+    return max(0.0, min(similarity, 1.0))
+
+
+def _vector_memory_candidates(
+    config_path: str,
+    paths: dict[str, Path | int],
+    index: dict,
+    query: str,
+    existing_memory_ids: set[str] | None = None,
+) -> tuple[list[dict], list[dict], list[str]]:
+    settings = _vector_settings(config_path)
+    metric_type = "COSINE"
+    if not settings["enabled"] or not query:
+        return [], [], []
+    existing_memory_ids = existing_memory_ids or set()
+    query_terms = _keyword_terms(query, _load_stopwords(config_path), config_path)
+    try:
+        ready = _ensure_vector_index(config_path, paths, index)
+        if int(ready.get("row_count", 0)) == 0:
+            return [], [], query_terms
+        client = _get_milvus_client(config_path)
+        _load_milvus_collection(client, settings["collection_name"])
+        query_embedding = _embed_texts(config_path, [query], is_query=True)
+        result = client.search(
+            collection_name=settings["collection_name"],
+            data=query_embedding,
+            anns_field="embedding",
+            limit=settings["candidate_k"],
+            search_params={"metric_type": metric_type},
+            output_fields=["chunk_id", "memory_id", "memory_type", "title", "path", "content", "chunk_index"],
+        )
+    except Exception as exc:
+        return (
+            [],
+            [{"type": type(exc).__name__, "message": str(exc), "source": "vector_memory"}],
+            query_terms,
+        )
+
+    hits = result[0] if result else []
+    candidates = []
+    for hit in hits:
+        metadata = hit.get("entity", {}) or {}
+        memory_id = metadata.get("memory_id")
+        if memory_id in existing_memory_ids:
+            continue
+        text = metadata.get("content", "")
+        raw_distance = hit.get("distance")
+        vector_similarity = _vector_distance_to_similarity(raw_distance, metric_type)
+        normalized_vector_score = _normalize_vector_similarity(vector_similarity, metric_type)
+        title_boost = _title_match_bonus(metadata.get("title"), query_terms, settings["title_match_boost"])
+        candidates.append(
+            {
+                "source": "vector",
+                "rank": len(candidates) + 1,
+                "chunk_id": metadata.get("chunk_id") or hit.get("id"),
+                "memory_id": memory_id,
+                "memory_type": metadata.get("memory_type", "vector"),
+                "conversation_id": metadata.get("conversation_id"),
+                "title": metadata.get("title", memory_id or "Vector Memory Chunk"),
+                "path": metadata.get("path", ""),
+                "content": text,
+                "original_chars": len(text),
+                "chunk_index": metadata.get("chunk_index"),
+                "source_scores": {
+                    "vector_raw_distance": raw_distance if raw_distance is not None else 0.0,
+                    "vector_similarity": vector_similarity,
+                    "vector_normalized": normalized_vector_score,
+                    "vector_rerank": normalized_vector_score + title_boost,
+                },
+                "matched_terms": [],
+                "query_terms": query_terms[:20],
+            }
+        )
+    candidates.sort(key=lambda item: item["source_scores"]["vector_rerank"], reverse=True)
+    if settings["dedupe_by_memory_id"]:
+        deduped = []
+        seen = set()
+        for candidate in candidates:
+            key = candidate.get("memory_id") or candidate.get("chunk_id")
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(candidate)
+        candidates = deduped
+    for rank, candidate in enumerate(candidates, start=1):
+        candidate["rank"] = rank
+    return candidates[: settings["candidate_k"]], [], query_terms
+
+
 def _search_vector_memory(
     config_path: str,
     paths: dict[str, Path | int],
@@ -672,67 +1121,112 @@ def _search_vector_memory(
     remaining_chars: int,
     existing_memory_ids: set[str] | None = None,
 ) -> tuple[list[dict], list[dict], bool]:
-    # Search related memory chunks in Milvus and return the same shape as selected_memory_docs.
     settings = _vector_settings(config_path)
     if not settings["enabled"] or not query or remaining_chars <= 0:
         return [], [], False
-    existing_memory_ids = existing_memory_ids or set()
-    try:
-        ready = _ensure_vector_index(config_path, paths, index)
-        if int(ready.get("row_count", 0)) == 0:
-            return [], [], False
-        client = _get_milvus_client(config_path)
-        _load_milvus_collection(client, settings["collection_name"])
-        query_embedding = _embed_texts(config_path, [query], is_query=True)
-        result = client.search(
-            collection_name=settings["collection_name"],
-            data=query_embedding,
-            anns_field="embedding",
-            limit=settings["top_k"],
-            search_params={"metric_type": "COSINE"},
-            output_fields=["memory_id", "memory_type", "title", "path", "content", "chunk_index"],
-        )
-    except Exception as exc:
-        return (
-            [],
-            [{"type": type(exc).__name__, "message": str(exc), "source": "vector_memory"}],
-            False,
-        )
+    candidates, errors, query_terms = _vector_memory_candidates(
+        config_path,
+        paths,
+        index,
+        query,
+        existing_memory_ids,
+    )
+    for candidate in candidates:
+        source_scores = candidate.get("source_scores", {})
+        candidate["retrieval"] = {
+            "raw_distance": source_scores.get("vector_raw_distance"),
+            "similarity": round(float(source_scores.get("vector_similarity", 0.0)), 6),
+            "normalized_score": round(float(source_scores.get("vector_normalized", 0.0)), 6),
+            "rerank_score": round(float(source_scores.get("vector_rerank", 0.0)), 6),
+        }
+    docs, any_truncated = _finalize_retrieval_candidates(
+        candidates,
+        remaining_chars,
+        settings["top_k"],
+        "milvus_vector",
+        query_terms,
+    )
+    return docs, errors, any_truncated
 
-    docs = []
-    used = 0
-    any_truncated = False
-    hits = result[0] if result else []
-    for hit in hits:
-        metadata = hit.get("entity", {}) or {}
-        memory_id = metadata.get("memory_id")
-        if memory_id in existing_memory_ids:
-            continue
-        if used >= remaining_chars:
-            break
-        text = metadata.get("content", "")
-        included = text[: remaining_chars - used]
-        used += len(included)
-        truncated = len(included) < len(text)
-        any_truncated = any_truncated or truncated
-        docs.append(
-            {
-                "memory_id": memory_id or f"vector_chunk_{len(docs)}",
-                "memory_type": metadata.get("memory_type", "vector"),
-                "title": metadata.get("title", memory_id or "Vector Memory Chunk"),
-                "path": metadata.get("path", ""),
-                "content": included,
-                "original_chars": len(text),
-                "included_chars": len(included),
-                "truncated": truncated,
-                "retrieval": {
-                    "type": "milvus_vector",
-                    "chunk_index": metadata.get("chunk_index"),
-                    "score": hit.get("distance"),
-                },
-            }
-        )
-    return docs, [], any_truncated
+
+def _fuse_retrieval_candidates(
+    keyword_candidates: list[dict],
+    vector_candidates: list[dict],
+    query_terms: list[str],
+    config_path: str,
+) -> list[dict]:
+    settings = _fusion_settings(config_path)
+    if not settings["enabled"]:
+        combined = keyword_candidates + vector_candidates
+        combined.sort(key=lambda item: (item.get("rank", 10**9), item.get("source", "")))
+        return combined[: settings["final_top_k"]]
+    if settings["strategy"] != "rrf":
+        raise ValueError("retrieval_fusion.strategy must be rrf")
+
+    merged = {}
+    source_lists = [
+        ("keyword", keyword_candidates, settings["keyword_weight"]),
+        ("vector", vector_candidates, settings["vector_weight"]),
+    ]
+    for source, candidates, weight in source_lists:
+        for rank, candidate in enumerate(candidates, start=1):
+            key = _candidate_key(candidate, settings["dedupe_by_memory_id"])
+            contribution = weight / (settings["rrf_k"] + rank)
+            current = merged.get(key)
+            if current is None:
+                current = {
+                    **candidate,
+                    "source_scores": {},
+                    "source_ranks": {},
+                    "matched_terms": set(),
+                    "_fusion_score": 0.0,
+                    "_best_contribution": -1.0,
+                }
+                merged[key] = current
+            if contribution > current["_best_contribution"]:
+                for field in (
+                    "chunk_id",
+                    "memory_id",
+                    "memory_type",
+                    "conversation_id",
+                    "title",
+                    "path",
+                    "content",
+                    "original_chars",
+                    "chunk_index",
+                ):
+                    current[field] = candidate.get(field)
+                current["_best_contribution"] = contribution
+            current["_fusion_score"] += contribution
+            current["source_ranks"][source] = min(rank, current["source_ranks"].get(source, rank))
+            for score_name, score in candidate.get("source_scores", {}).items():
+                current["source_scores"][score_name] = score
+            current["matched_terms"].update(candidate.get("matched_terms", []))
+
+    fused = []
+    for candidate in merged.values():
+        title_boost = _title_match_bonus(candidate.get("title"), query_terms, settings["title_match_boost"])
+        fusion_score = candidate["_fusion_score"] + title_boost
+        source_scores = {
+            key: round(float(value), 6)
+            for key, value in sorted(candidate.get("source_scores", {}).items())
+        }
+        source_ranks = {
+            key: int(value)
+            for key, value in sorted(candidate.get("source_ranks", {}).items())
+        }
+        candidate["retrieval"] = {
+            "strategy": "rrf",
+            "fusion_score": round(float(fusion_score), 6),
+            "source_scores": source_scores,
+            "source_ranks": source_ranks,
+            "sources": sorted(source_ranks),
+            "matched_terms": sorted(candidate.get("matched_terms", set())),
+        }
+        candidate["_fusion_score"] = fusion_score
+        fused.append(candidate)
+    fused.sort(key=lambda item: item["_fusion_score"], reverse=True)
+    return fused[: settings["final_top_k"]]
 
 
 def _read_index(index_path: Path) -> dict:
@@ -794,29 +1288,51 @@ def load_memory(
                 }
             )
             remaining -= len(included)
-    keyword_docs, keyword_errors, keyword_truncated = _search_keyword_memory(
-        config_path,
-        paths,
-        index,
-        query or "",
-        remaining,
-        {item["memory_id"] for item in docs},
-    )
-    docs.extend(keyword_docs)
-    errors.extend(keyword_errors)
-    any_truncated = any_truncated or keyword_truncated
-    remaining -= sum(item["included_chars"] for item in keyword_docs)
-    vector_docs, vector_errors, vector_truncated = _search_vector_memory(
-        config_path,
-        paths,
-        index,
-        query or "",
-        remaining,
-        {item["memory_id"] for item in docs},
-    )
-    docs.extend(vector_docs)
-    errors.extend(vector_errors)
-    any_truncated = any_truncated or vector_truncated
+    keyword_docs = []
+    vector_docs = []
+    fused_docs = []
+    search_text = query or ""
+    if search_text and remaining > 0:
+        existing_ids = {item["memory_id"] for item in docs}
+        keyword_candidates, keyword_errors, keyword_terms = _keyword_memory_candidates(
+            config_path,
+            paths,
+            index,
+            search_text,
+            existing_ids,
+        )
+        vector_candidates, vector_errors, vector_terms = _vector_memory_candidates(
+            config_path,
+            paths,
+            index,
+            search_text,
+            existing_ids,
+        )
+        errors.extend(keyword_errors)
+        errors.extend(vector_errors)
+        query_terms = []
+        seen_terms = set()
+        for term in keyword_terms + vector_terms:
+            if term in seen_terms:
+                continue
+            seen_terms.add(term)
+            query_terms.append(term)
+        fused_candidates = _fuse_retrieval_candidates(keyword_candidates, vector_candidates, query_terms, config_path)
+        fused_docs, fused_truncated = _finalize_retrieval_candidates(
+            fused_candidates,
+            remaining,
+            _fusion_settings(config_path)["final_top_k"],
+            "hybrid_rrf",
+            query_terms,
+        )
+        docs.extend(fused_docs)
+        any_truncated = any_truncated or fused_truncated
+        for item in fused_docs:
+            sources = set(item.get("retrieval", {}).get("sources", []))
+            if "keyword" in sources:
+                keyword_docs.append(item)
+            if "vector" in sources:
+                vector_docs.append(item)
     if errors and docs:
         status = "partial"
     elif errors:
@@ -881,15 +1397,132 @@ def _normalize_memory_statement(statement: str) -> str:
 
 
 def _statement_terms(statement: str, config_path: str) -> set[str]:
-    return set(_keyword_terms(_strip_memory_role_prefix(statement), _load_stopwords(config_path)))
+    return set(_keyword_terms(_strip_memory_role_prefix(statement), _load_stopwords(config_path), config_path))
 
 
-def _statement_overlap(left: str, right: str, config_path: str) -> float:
-    left_terms = _statement_terms(left, config_path)
-    right_terms = _statement_terms(right, config_path)
-    if not left_terms or not right_terms:
+def _statement_bm25_index(statements: list[str], config_path: str) -> dict:
+    stopwords = _load_stopwords(config_path)
+    docs = []
+    doc_freq = Counter()
+    for index, statement in enumerate(statements):
+        terms = _keyword_terms(_strip_memory_role_prefix(statement), stopwords, config_path)
+        term_counts = Counter(terms)
+        docs.append(
+            {
+                "index": index,
+                "statement": statement,
+                "term_counts": term_counts,
+                "length": sum(term_counts.values()),
+            }
+        )
+        for term in term_counts:
+            doc_freq[term] += 1
+    total_docs = len(docs)
+    avg_doc_len = sum(doc["length"] for doc in docs) / total_docs if total_docs else 0.0
+    return {
+        "docs": docs,
+        "doc_freq": doc_freq,
+        "total_docs": total_docs,
+        "avg_doc_len": avg_doc_len,
+    }
+
+
+def _best_statement_bm25_match(statements: list[str], query_statement: str, config_path: str) -> dict:
+    bm25_index = _statement_bm25_index(statements, config_path)
+    if bm25_index["total_docs"] == 0:
+        return {"index": None, "similarity": 0.0, "score": 0.0, "term_coverage": 0.0, "matched_terms": []}
+
+    stopwords = _load_stopwords(config_path)
+    query_terms = _keyword_terms(_strip_memory_role_prefix(query_statement), stopwords, config_path)
+    query_counts = Counter(query_terms)
+    if not query_counts:
+        return {"index": None, "similarity": 0.0, "score": 0.0, "term_coverage": 0.0, "matched_terms": []}
+
+    settings = _keyword_settings(config_path)
+    total_docs = bm25_index["total_docs"]
+    avg_doc_len = bm25_index["avg_doc_len"]
+    doc_freq = bm25_index["doc_freq"]
+    best = {"index": None, "similarity": 0.0, "score": 0.0, "matched_terms": []}
+    for doc in bm25_index["docs"]:
+        score = 0.0
+        matched_terms = []
+        for term, query_tf in query_counts.items():
+            tf = doc["term_counts"].get(term, 0)
+            df = doc_freq.get(term, 0)
+            if tf <= 0 or df <= 0:
+                continue
+            matched_terms.append(term)
+            score += query_tf * _bm25_score(
+                tf,
+                df,
+                total_docs,
+                doc["length"],
+                avg_doc_len,
+                settings["bm25_k1"],
+                settings["bm25_b"],
+            )
+        if score > best["score"]:
+            best = {
+                "index": doc["index"],
+                "similarity": 0.0,
+                "score": score,
+                "term_coverage": 0.0,
+                "matched_terms": sorted(matched_terms),
+            }
+
+    query_len = sum(query_counts.values())
+    max_score = 0.0
+    for term, query_tf in query_counts.items():
+        df = doc_freq.get(term, 0)
+        if df <= 0:
+            continue
+        max_score += query_tf * _bm25_score(
+            query_tf,
+            df,
+            total_docs,
+            query_len,
+            avg_doc_len,
+            settings["bm25_k1"],
+            settings["bm25_b"],
+        )
+    if max_score > 0:
+        matched_tf = sum(query_counts[term] for term in best["matched_terms"])
+        term_coverage = matched_tf / max(query_len, 1)
+        best["term_coverage"] = term_coverage
+        best["similarity"] = min(best["score"] / max_score, 1.0) * term_coverage
+    return best
+
+
+def _cosine_similarity(left: list[float], right: list[float]) -> float:
+    if not left or not right or len(left) != len(right):
         return 0.0
-    return len(left_terms & right_terms) / max(1, min(len(left_terms), len(right_terms)))
+    return sum(a * b for a, b in zip(left, right))
+
+
+def _best_statement_vector_match(statements: list[str], query_statement: str, config_path: str) -> dict:
+    if not statements or not query_statement.strip():
+        return {"index": None, "similarity": 0.0, "error": None}
+    try:
+        prepared = [_strip_memory_role_prefix(statement) for statement in statements]
+        query = _strip_memory_role_prefix(query_statement)
+        embeddings = _embed_texts(config_path, prepared + [query], is_query=False)
+    except Exception as exc:
+        return {
+            "index": None,
+            "similarity": 0.0,
+            "error": {"type": type(exc).__name__, "message": str(exc)},
+        }
+    if len(embeddings) != len(statements) + 1:
+        return {"index": None, "similarity": 0.0, "error": None}
+    query_embedding = embeddings[-1]
+    best_index = None
+    best_score = 0.0
+    for index, embedding in enumerate(embeddings[:-1]):
+        score = _cosine_similarity(embedding, query_embedding)
+        if score > best_score:
+            best_index = index
+            best_score = score
+    return {"index": best_index, "similarity": best_score, "error": None}
 
 
 def _merge_memory_content(old_content: str, new_content: str, config_path: str, conflict_strategy: str = "mark") -> dict:
@@ -905,6 +1538,7 @@ def _merge_memory_content(old_content: str, new_content: str, config_path: str, 
     duplicates = []
     supplements = []
     conflicts = []
+    semantic_match_errors = []
 
     for new_statement in new_statements:
         normalized_new = _normalize_memory_statement(new_statement)
@@ -912,22 +1546,46 @@ def _merge_memory_content(old_content: str, new_content: str, config_path: str, 
             duplicates.append({"new": new_statement, "old": merged[normalized_to_index[normalized_new]]})
             continue
 
-        best_index = None
-        best_score = 0.0
-        for index, old_statement in enumerate(merged):
-            score = _statement_overlap(old_statement, new_statement, config_path)
-            if score > best_score:
-                best_index = index
-                best_score = score
+        best_match = _best_statement_bm25_match(merged, new_statement, config_path)
+        best_index = best_match["index"]
+        best_score = best_match["similarity"]
+        match_method = "bm25"
+        vector_match = None
+        if best_index is None or best_score < 0.72:
+            vector_match = _best_statement_vector_match(merged, new_statement, config_path)
+            if vector_match.get("error"):
+                semantic_match_errors.append(vector_match["error"])
+            elif vector_match["index"] is not None and vector_match["similarity"] >= 0.82:
+                best_index = vector_match["index"]
+                best_score = vector_match["similarity"]
+                match_method = "vector"
 
         if best_index is not None and best_score >= 0.72:
             old_statement = merged[best_index]
             conflict = {
                 "old": old_statement,
                 "new": new_statement,
-                "overlap": round(best_score, 4),
+                "match_method": match_method,
                 "resolution": conflict_strategy,
             }
+            if match_method == "bm25":
+                conflict.update(
+                    {
+                        "bm25_similarity": round(best_score, 4),
+                        "bm25_score": round(float(best_match["score"]), 6),
+                        "term_coverage": round(float(best_match["term_coverage"]), 4),
+                        "matched_terms": best_match["matched_terms"],
+                    }
+                )
+            else:
+                conflict.update(
+                    {
+                        "semantic_similarity": round(best_score, 4),
+                        "bm25_similarity": round(float(best_match["similarity"]), 4),
+                        "bm25_score": round(float(best_match["score"]), 6),
+                        "matched_terms": best_match["matched_terms"],
+                    }
+                )
             conflicts.append(conflict)
             if conflict_strategy == "prefer_new":
                 merged[best_index] = new_statement
@@ -949,6 +1607,7 @@ def _merge_memory_content(old_content: str, new_content: str, config_path: str, 
         "duplicates": duplicates,
         "supplements": supplements,
         "conflicts": conflicts,
+        "semantic_match_errors": semantic_match_errors,
         "conflict_strategy": conflict_strategy,
     }
 
