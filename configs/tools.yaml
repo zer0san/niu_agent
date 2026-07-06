@@ -2,6 +2,11 @@ default_toolset: basic_tools
 
 settings:
   data_root: ../data
+  max_retries: 1
+  retryable_error_types:
+    - FileNotFoundError
+    - TimeoutError
+    - ConnectionError
 
 toolsets:
   basic_tools:

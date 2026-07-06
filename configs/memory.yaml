@@ -7,3 +7,50 @@ memory:
   history_compress_keep_recent: 2  # 保留最近N轮完整对话
   history_compress_max_sentences: 3  # 摘要最大句子数
   enable_history_compress: true  # 是否启用历史压缩
+
+memory_summary:
+  enabled: true
+  max_source_chars: 800
+  max_summary_chars: 500
+  max_sentences: 3
+  max_keywords: 8
+
+keyword_memory:
+  enabled: true
+  backend: sqlite_bm25
+  index_path: keyword_bm25.sqlite
+  stopwords_path: ../memory/stopwords_baidu.txt
+  userdict_path:
+  top_k: 3
+  candidate_k: 20
+  chunk_size: 200
+  chunk_overlap: 30
+  bm25_k1: 1.5
+  bm25_b: 0.75
+  ngram_fallback_enabled: false
+  ngram_size: 2
+
+vector_memory:
+  enabled: true
+  backend: milvus
+  db_path: ../memory/milvus_memory.db
+  collection_name: memory_chunks
+  embedding_model_path: ../embedding_models/bge-small-zh-v1.5
+  embedding_dim: 512
+  query_instruction: "为这个句子生成表示以用于检索相关文章："
+  top_k: 3
+  candidate_k: 20
+  chunk_size: 200
+  chunk_overlap: 30
+  dedupe_by_memory_id: true
+  title_match_boost: 0.05
+
+retrieval_fusion:
+  enabled: true
+  strategy: rrf
+  final_top_k: 3
+  rrf_k: 60
+  keyword_weight: 1.0
+  vector_weight: 1.0
+  dedupe_by_memory_id: true
+  title_match_boost: 0.05
