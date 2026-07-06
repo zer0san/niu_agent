@@ -3,5 +3,6 @@ __pycache__/
 outputs/
 outputs/_test_*/
 outputs/tmp*/
+memory/*.sqlite
 models/*
 !models/.gitkeep
