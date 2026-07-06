@@ -115,7 +115,7 @@ Plan-and-Execute 功能不只修改了b4，还修改了b1。
 
 ```
 python code/b1_agent_runtime.py \
-    --input data/b4_fixtures_plan/b4_fixture_input.json \
+    --input data/b4_fixtures/b4_fixtures_plan/b4_fixture_input.json \
     --outdir output/fixture_plan_test
 ```
 
@@ -167,4 +167,3 @@ python code/b1_agent_runtime.py \
   --model_config configs/model.yaml \
   --outdir output/multi_tool_test
 ```
-

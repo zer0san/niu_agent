@@ -1,0 +1,76 @@
+{
+  "conversation_id": "conv_b1_fixture_plan_001",
+  "execution_mode": "fixture",
+  "status": "success",
+  "toolset": "basic_tools",
+  "max_turns": 3,
+  "tool_rounds_used": 1,
+  "llm_call_count": 2,
+  "turns": [
+    {
+      "turn_index": 1,
+      "step_index": 1,
+      "step_description": "读取文档文件获取内容",
+      "ai_message": {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_plan_001",
+            "name": "file_reader",
+            "args": {
+              "path": "data/docs/agent_intro.txt",
+              "max_chars": 2000
+            }
+          }
+        ]
+      },
+      "llm_status": "success",
+      "llm_error": null,
+      "tool_messages": [
+        {
+          "role": "tool",
+          "tool_call_id": "call_plan_001",
+          "name": "file_reader",
+          "content": "{\"skill_name\":\"file_reader\",\"status\":\"success\",\"input\":{\"path\":\"data/docs/agent_intro.txt\",\"max_chars\":2000},\"output\":{\"content\":\"Agent 系统通常由模型、工具、记忆和执行循环组成。\\n工具调用让模型能够读取本地文件、执行计算，并把结果用于后续回答。\\nMemory 为 Agent 提供全局知识和历史对话上下文。\",\"num_chars\":92,\"source\":\"data/docs/agent_intro.txt\",\"truncated\":false},\"error\":null,\"latency_ms\":0.0}",
+          "status": "success"
+        }
+      ],
+      "latency_ms": 0.051
+    },
+    {
+      "turn_index": 2,
+      "step_index": 2,
+      "step_description": "总结文档内容并给出最终回答",
+      "ai_message": {
+        "role": "assistant",
+        "content": "三条中文要点如下：\n1. Agent 系统由模型、工具、记忆和执行循环组成。\n2. 工具调用让模型能够读取本地文件和执行计算。\n3. Memory 为后续决策提供全局知识和历史上下文。",
+        "tool_calls": []
+      },
+      "llm_status": "success",
+      "llm_error": null,
+      "tool_messages": [],
+      "latency_ms": 0.009
+    }
+  ],
+  "final_answer_path": "final_answer.md",
+  "memory_save": {
+    "requested": "none",
+    "status": "not_requested"
+  },
+  "warnings": [],
+  "error": null,
+  "user_input_count": 1,
+  "final_answers": [
+    "三条中文要点如下：\n1. Agent 系统由模型、工具、记忆和执行循环组成。\n2. 工具调用让模型能够读取本地文件和执行计算。\n3. Memory 为后续决策提供全局知识和历史上下文。"
+  ],
+  "system_prompt_switches": [
+    {
+      "source": "base",
+      "path": "../../../prompts/local_tool_agent.txt",
+      "mode": "initial",
+      "content_length": 430
+    }
+  ],
+  "history_compressions": []
+}
