@@ -148,17 +148,32 @@ def code_executor(code: str, timeout: int = MAX_TIME, capture_print: bool = True
             if len(stderr_cap.getvalue()) > MAX_OUT:
                 err += f"\n... 截断 >{MAX_OUT}"
 
+            def _json_safe_value(v):
+                if isinstance(v, (str, int, float, bool, type(None))):
+                    return v
+                if isinstance(v, (list, dict)):
+                    try:
+                        import json
+                        json.dumps(v)
+                        return v
+                    except (TypeError, ValueError):
+                        return repr(v)[:MAX_STR] + '...' if len(repr(v)) > MAX_STR else repr(v)
+                return repr(v)[:MAX_STR] + '...' if len(repr(v)) > MAX_STR else repr(v)
+
             vars_ = {}
             for k, v in safe_locals.items():
                 if not k.startswith('_') and len(vars_) < MAX_VARS:
                     try:
-                        rp = repr(v)
-                        vars_[k] = v if len(rp) <= MAX_STR else rp[:MAX_STR] + '...'
+                        vars_[k] = _json_safe_value(v)
                     except:
                         vars_[k] = '<unrepresentable>'
 
-            last = next((safe_locals[k] for k in reversed(list(safe_locals.keys()))
-                        if not k.startswith('_')), None)
+            last = None
+            for k in reversed(list(safe_locals.keys())):
+                v = safe_locals[k]
+                if not k.startswith('_') and isinstance(v, (str, int, float, bool, list, dict, tuple, type(None))):
+                    last = v
+                    break
 
             output = {'result': last, 'stdout': out, 'stderr': err, 'variables': vars_,
                       'sandbox': {'max_code': MAX_CODE, 'max_time': MAX_TIME, 'max_recursion': MAX_RECUR,

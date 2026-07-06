@@ -148,7 +148,7 @@ tools:
     description: Analyze a CSV/TSV table file and format the statistics as a report.
     parameters:
       path: {type: string, description: Table file path (relative to data root).}
-      target_format: {type: string, description: Output format: markdown, json, yaml, csv, html.}
+      target_format: {type: string, description: "Output format: markdown, json, yaml, csv, or html."}
     required: [path]
     returns:
       report: {type: string, description: Formatted analysis report.}
@@ -161,7 +161,7 @@ tools:
     description: Evaluate a math expression and format the result.
     parameters:
       expression: {type: string, description: Arithmetic expression.}
-      target_format: {type: string, description: Output format: markdown, json, yaml, csv, html.}
+      target_format: {type: string, description: "Output format: markdown, json, yaml, csv, or html."}
     required: [expression]
     returns:
       expression: {type: string, description: Original expression.}
@@ -174,7 +174,7 @@ tools:
     description: Read a file, summarize its content, and generate a formatted report.
     parameters:
       path: {type: string, description: File path (relative to data root).}
-      target_format: {type: string, description: Output format: markdown, json, yaml, csv, html.}
+      target_format: {type: string, description: "Output format: markdown, json, yaml, csv, or html."}
       max_sentences: {type: integer, description: Maximum summary sentences.}
     required: [path]
     returns:
