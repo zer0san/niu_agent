@@ -1076,21 +1076,15 @@ python code/b1_agent_runtime.py `
 
   
 
-| 文件 | 说明 |
-
-| :--- | :--- |
-
-| `messages.json` | 完整对话消息历史 |
-
-| `trace.json` | 执行轨迹（轮次、状态、错误信息） |
-
-| `final_answer.md` | 最终回答 |
-
+| 文件                   | 说明                   |
+| :------------------- | :------------------- |
+| `messages.json`      | 完整对话消息历史             |
+| `trace.json`         | 执行轨迹（轮次、状态、错误信息）     |
+| `final_answer.md`    | 最终回答                 |
 | `tool_messages.json` | 工具执行结果（integrated模式） |
+| `runtime_log.jsonl`  | 运行日志（integrated模式）   |
+| `llm_calls/`         | LLM调用记录（原始输出、解析结果）   |
 
-| `runtime_log.jsonl` | 运行日志（integrated模式） |
-
-| `llm_calls/` | LLM调用记录（原始输出、解析结果） |
 
   
 
