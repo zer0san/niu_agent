@@ -1,0 +1,1 @@
+{"timestamp": "2026-07-06T14:32:16+08:00", "operation": "load", "status": "partial", "selected_ids": ["mem_conversation_batch_demo_multi_turn", "mem_course_001", "mem_conversation_conv_000"], "keyword_retrieved_count": 3, "vector_retrieved_count": 0, "errors": [{"type": "ModuleNotFoundError", "message": "No module named 'pymilvus'", "source": "vector_memory"}]}

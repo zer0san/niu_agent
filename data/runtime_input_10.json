@@ -1,0 +1,10 @@
+{
+  "conversation_id": "conv_010",
+  "user_input": "请计算表达式 23*17+9*14 的结果，并将表达式和结果一起格式化为 JSON 格式输出。",
+  "system_prompt_path": "../prompts/local_tool_agent.txt",
+  "selected_memory_ids": [],
+  "use_global_memory": false,
+  "toolset": "basic_tools",
+  "max_turns": 3,
+  "save_memory": "none"
+}
