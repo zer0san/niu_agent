@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+outputs/
+outputs/_test_*/
+outputs/tmp*/
+memory/*.sqlite
+models/*
+!models/.gitkeep
+idea/
