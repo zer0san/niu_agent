@@ -6,3 +6,4 @@ outputs/tmp*/
 memory/*.sqlite
 models/*
 !models/.gitkeep
+.idea
