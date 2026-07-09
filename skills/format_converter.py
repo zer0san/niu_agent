@@ -118,7 +118,7 @@ def format_converter(text: str, target_format: str, output_filename: str | None 
                         raise ParseError(code="FCONV-EXEC-001", message="反向转换需要JSON对象")
                     result = _json_to_kv(parsed)
                 else:
-                    result = json.dumps(parsed if parsed is not None else _parse_kv(text), ensure_ascii=False, indent=2)
+                    result = json.dumps(parsed or _parse_kv(text), ensure_ascii=False, indent=2)
             elif fmt in ("csv", "html"):
                 data = parsed if isinstance(parsed, list) else [parsed] if isinstance(parsed, dict) else None
                 if not data:
