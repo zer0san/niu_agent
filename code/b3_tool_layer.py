@@ -35,6 +35,7 @@ RETRYABLE_EXCEPTION_TYPES = {
     "TimeoutError": TimeoutError,
 }
 INJECTED_TOOL_PARAMS = {"data_root", "output_dir"}
+SKILL_RESULT_KEYS = {"skill_name", "status", "input", "output", "error", "latency_ms"}
 
 
 def _load_tools_config(tools_config: str | Path) -> tuple[Path, dict]:
@@ -287,6 +288,25 @@ def _error_result(name: str, args: dict, exc: Exception, latency_ms: float = 0.0
     )
 
 
+def _is_skill_result(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and SKILL_RESULT_KEYS.issubset(value)
+        and isinstance(value.get("skill_name"), str)
+        and value.get("status") in {"success", "error"}
+        and isinstance(value.get("input"), dict)
+    )
+
+
+def _coerce_skill_result(name: str, args: dict, output: Any, latency_ms: float) -> dict:
+    if _is_skill_result(output):
+        result = deepcopy(output)
+        if result.get("latency_ms") is None:
+            result["latency_ms"] = latency_ms
+        return result
+    return make_skill_result(name, "success", args, output, None, latency_ms)
+
+
 def _tool_cache_key(name: str, args: dict) -> str:
     # 用稳定 JSON 作为缓存键；同名工具、同参数内容才会复用结果。
     return json.dumps({"name": name, "args": args}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -492,7 +512,7 @@ def execute_tool_calls(
                                     continue
                                 raise
                         latency_ms = round((perf_counter() - start) * 1000, 3)
-                        result = make_skill_result(name, "success", args, output, None, latency_ms)
+                        result = _coerce_skill_result(name, args, output, latency_ms)
                         result_cache[cache_key] = deepcopy(result)
                 except (ImportError, AttributeError) as exc:
                     raise RuntimeError(f"cannot load configured tool {name}: {exc}") from exc
