@@ -31,7 +31,7 @@ pip install -r requirements.txt
 统一配置文件为 `configs/model.yaml`，实际使用时需要把model_name_or_path和tokenizer_name_or_path改为模型所在的文件路径。
 
 演示命令均从 `agent/code` 目录执行：
-
+   ├── 标准JSON → 尾部反引号处理 → tool_calls片段提取
 ```bash
 cd agent/code
 ```
@@ -41,44 +41,44 @@ cd agent/code
 ### 2.1 SkillResult
 
 B2 和 B3 使用以下 JSON 对象记录一次 Skill 执行：
+### 多轮输入
 
-```json
-{
+**实现思路**：
   "skill_name": "calculator",
   "status": "success",
   "input": {"expression": "23 * 17 + 9"},
   "output": {"result": 400},
   "error": null,
   "latency_ms": 0.5
-}
-```
-
+  "user_inputs": [
+    "帮我阅读 docs/agent_intro.txt，总结三条中文要点。",
+    "请分析 tables/results.csv 表格",
 失败时 `status` 为 `error`、`output` 为 `null`，`error` 包含异常类型和错误信息。
 
 ### 2.2 AIMessage
 
 工具调用型 AIMessage：
+**实现思路**：
 
-```json
-{
+1. **管理器模式**：引入 `SystemPromptManager` 类封装prompt的加载、切换和历史记录
   "role": "assistant",
   "content": "",
   "tool_calls": [
-    {
+
       "id": "call_001",
       "name": "file_reader",
       "args": {"path": "docs/agent_intro.txt", "max_chars": 2000}
-    }
-  ]
-}
-```
-
+    {
+      "after_user_input": 0,
+      "switch_to": "../prompts/researcher.txt",
+      "mode": "append"
+    },
 最终回答型 AIMessage 的 `content` 非空，`tool_calls` 为空数组。
 
 ### 2.3 ToolMessage
 
-```json
-{
+**实现思路**：
+
   "role": "tool",
   "tool_call_id": "call_001",
   "name": "file_reader",
@@ -122,8 +122,8 @@ python b2_run_skill.py --skill file_reader --input ../data/tool_inputs/tool_inpu
 python b2_run_skill.py --skill local_file_search --input ../data/tool_inputs/tool_input_file_search.json --outdir ../outputs/B2_skills
 python b2_run_skill.py --skill table_analyzer --input ../data/tool_inputs/tool_input_table_analyzer.json --outdir ../outputs/B2_skills
 python b2_run_skill.py --skill format_converter --input ../data/tool_inputs/tool_input_format_converter.json --outdir ../outputs/B2_skills
-```
-
+      "conversation_id": "task_002",
+      "user_input": "帮我计算56*29+81",
 ### 3.4 B2 输出
 
 | 输出文件 | 格式 | 说明 |
@@ -512,3 +512,12 @@ system → user → assistant(tool_calls) → tool → assistant(final)
 | `llm_calls/llm_call_002_ai_message.json` | `b4_local_agent_llm.py` | 第二次 AIMessage，包含最终回答。 | JSON 对象 |
 | `llm_calls/llm_run_log.jsonl` | `b4_local_agent_llm.py` | 完整演示 LLM 调用日志。 | JSONL |
 | `demo_report.md` | `run_full_demo.py` | 对完整演示状态、数据流、最终回答和文件清单的汇总。 | Markdown |
+| `tool_messages.json` | 工具执行结果（integrated模式） |
+| `runtime_log.jsonl` | 运行日志（integrated模式） |
+| `llm_calls/` | LLM调用记录（原始输出、解析结果） |
+
+---
+
+## 许可证
+
+MIT License
