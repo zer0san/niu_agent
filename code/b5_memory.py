@@ -65,6 +65,7 @@ def get_history_compress_config(config_path: str | Path) -> dict:
         enabled = True
 
     return {
+        "history_compress_threshold": threshold,
         "history_compress_keep_recent": keep_recent,
         "history_compress_max_sentences": max_sentences,
         "enable_history_compress": enabled,
