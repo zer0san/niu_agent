@@ -15,7 +15,7 @@
 ```
 python b1_agent_runtime.py \
   --input ../data/b1_fixtures/multi_input/b1_fixture_input_multi.json \
-  --outdir ../outputs/B1_fixture_multi
+  --outdir ../output/B1_fixture_multi
 ```
 
 
