@@ -3,7 +3,7 @@ memory:
   global_memory_dir: global
   conversation_memory_dir: conversations
   index_path: memory_index.json
-  max_memory_chars: 2000  # 达到80%时压缩历史消息
+  max_memory_chars: 200  # 达到80%时压缩历史消息
   history_compress_keep_recent: 2  # 保留最近N轮完整对话
   history_compress_max_sentences: 3  # 摘要最大句子数
   enable_history_compress: true  # 是否启用历史压缩

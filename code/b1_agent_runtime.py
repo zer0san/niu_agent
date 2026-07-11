@@ -57,8 +57,11 @@ def _compress_history(
 
     compressed_messages = []
     if system_msg:
-        compressed_messages.append(system_msg)
-    compressed_messages.append({"role": "system", "content": summary_content})
+        system_msg_copy = dict(system_msg)
+        system_msg_copy["content"] = f"{system_msg['content']}\n\n{summary_content}"
+        compressed_messages.append(system_msg_copy)
+    else:
+        compressed_messages.append({"role": "system", "content": summary_content})
     compressed_messages.extend(recent_messages)
 
     compressed_chars = _calculate_messages_chars(compressed_messages)
@@ -328,7 +331,7 @@ def run_agent(
             if messages:
                 messages[0]["content"] = current_system_prompt
             else:
-                messages = [{"role": "system", "content": current_system_prompt}]
+                messages.append({"role": "system", "content": current_system_prompt})
         else:
             selected_memory = fixture_data["selected_memory"]
             memory_context = _memory_context(selected_memory)
@@ -336,7 +339,7 @@ def run_agent(
             if messages:
                 messages[0]["content"] = current_system_prompt
             else:
-                messages = [{"role": "system", "content": current_system_prompt}]
+                messages.append({"role": "system", "content": current_system_prompt})
 
         messages.append({"role": "user", "content": user_input})
         current_turns = []
@@ -524,7 +527,7 @@ def run_agent(
                                     runtime["history_compress_max_sentences"],
                                 )
                                 if info:
-                                    messages = compressed
+                                    messages[:] = compressed
                                     print(f"History compressed: {info['compression_ratio']*100:.1f}% reduction")
                                     history_compressions.append(info)
 
@@ -588,7 +591,7 @@ def run_agent(
                         runtime["history_compress_max_sentences"],
                     )
                     if info:
-                        messages = compressed
+                        messages[:] = compressed
                         print(f"History compressed: {info['compression_ratio']*100:.1f}% reduction")
                         history_compressions.append(info)
 
