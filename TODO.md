@@ -15,7 +15,7 @@
 ```
 python b1_agent_runtime.py \
   --input ../data/b1_fixtures/multi_input/b1_fixture_input_multi.json \
-  --outdir ../output/B1_fixture_multi
+  --outdir ../output/B1_fixture/B1_fixture_multi
 ```
 
 
@@ -26,7 +26,7 @@ python b1_agent_runtime.py \
   --tools_config ../configs/tools.yaml \
   --memory_config ../configs/memory.yaml \
   --model_config ../configs/model.yaml \
-  --outdir ../output/B1_runtime
+  --outdir ../output/B1_runtime/B1_runtime_multi
 ```
 
 ## prompt 切换
@@ -40,7 +40,7 @@ python b1_agent_runtime.py \
 ```
 python b1_agent_runtime.py \
   --input ../data/b1_fixtures/prompt_change/b1_fixture_input.json \
-  --outdir ../output/prompt_change_test_1
+  --outdir ../output/B1_fixture/prompt_change_test_1
 ```
 
 全系统演示
@@ -50,7 +50,7 @@ python b1_agent_runtime.py \
 --tools_config ../configs/tools.yaml \
 --memory_config ../configs/memory.yaml \
 --model_config ../configs/model.yaml \
---outdir ../output/runtime_prompt_change
+--outdir ../output/B1_runtime/runtime_prompt_change
 ```
 
 ## 批量任务运行
@@ -66,7 +66,7 @@ python b1_agent_runtime.py \
 ```
 python b1_agent_runtime.py \
   --input ../data/b1_fixtures/batch_input/b1_fixture_batch_input.json \
-  --outdir ../output/batch_test_1 \
+  --outdir ../output/B1_fixture/batch_test \
   --batch
 ```
 
@@ -74,7 +74,7 @@ python b1_agent_runtime.py \
 ```
 python b1_agent_runtime.py \
 --input ../data/runtime_input_batch.json \
---outdir ../output/batch_full_demo2 \
+--outdir ../output/B1_runtime/batch_full_demo \
 --tools_config ../configs/tools.yaml \
 --memory_config ../configs/memory.yaml \
 --model_config ../configs/model.yaml \
@@ -93,14 +93,14 @@ fixture 测试
 ```
 python code/b1_agent_runtime.py \
     --input data/b1_fixtures/history_compress/b1_fixture_input.json \
-    --outdir output/history_compress_test
+    --outdir output/B1_fixture/history_compress_test
 ```
 
 全局测试
 ```
 python b1_agent_runtime.py \
 --input ../data/runtime_input_compress_server.json \
---outdir ../output/compress_server \
+--outdir ../output/B1_runtime/compress_server \
 --tools_config ../configs/tools.yaml \
 --memory_config ../configs/memory.yaml \
 --model_config ../configs/model.yaml 
@@ -127,7 +127,7 @@ Plan-and-Execute 功能不只修改了b4，还修改了b1。
 ```
 python code/b1_agent_runtime.py \
     --input data/b4_fixtures/b4_fixtures_plan/b4_fixture_input.json \
-    --outdir output/fixture_plan_test
+    --outdir output/B4_fixture/fixture_plan_test
 ```
 
 
@@ -140,7 +140,7 @@ python code/b1_agent_runtime.py \
     --tools_config configs/tools.yaml \
     --memory_config configs/memory.yaml \
     --model_config configs/model.yaml \
-    --outdir output/server_plan_test
+    --outdir output/B4_rutime/server_plan_test
 ```
 
 运行 ReAct 模式测试
@@ -150,7 +150,7 @@ python code/b1_agent_runtime.py \
     --tools_config configs/tools.yaml \
     --memory_config configs/memory.yaml \
     --model_config configs/model.yaml \
-    --outdir output/server_react_test
+    --outdir output/B4_rutime/server_react_test
 ```
 
 ## 单轮AIMessage生成多个tool_calls与单轮接收多个ToolMessage
@@ -166,7 +166,7 @@ python code/b1_agent_runtime.py \
 ```
 python code/b1_agent_runtime.py \
 --input data/b4_fixtures/b4_fixtures_plan/b4_fixture_input.json \
---outdir output/multi_tool_fixture_test
+--outdir output/B4_fixture/multi_tool_fixture_test
 ```
 
 
@@ -176,5 +176,5 @@ python code/b1_agent_runtime.py \
   --tools_config configs/tools.yaml \
   --memory_config configs/memory.yaml \
   --model_config configs/model.yaml \
-  --outdir output/multi_tool_test
+  --outdir output/B4_rutime/multi_tool_test
 ```
