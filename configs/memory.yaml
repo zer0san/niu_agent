@@ -10,7 +10,7 @@ memory:
 
 memory_summary:
   enabled: true
-  max_source_chars: 800
+  max_source_chars: 500
   max_summary_chars: 500
   max_sentences: 3
   max_keywords: 8
@@ -27,8 +27,6 @@ keyword_memory:
   chunk_overlap: 30
   bm25_k1: 1.5
   bm25_b: 0.75
-  ngram_fallback_enabled: false
-  ngram_size: 2
 
 vector_memory:
   enabled: true
@@ -42,7 +40,6 @@ vector_memory:
   candidate_k: 20
   chunk_size: 200
   chunk_overlap: 30
-  dedupe_by_memory_id: true
   title_match_boost: 0.05
 
 retrieval_fusion:

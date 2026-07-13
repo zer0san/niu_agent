@@ -90,7 +90,6 @@ def _vector_settings(config_path: str | Path) -> dict:
         "candidate_k": int(vector.get("candidate_k", max(int(vector.get("top_k", 3)) * 4, 20))),
         "chunk_size": int(vector.get("chunk_size", 500)),
         "chunk_overlap": int(vector.get("chunk_overlap", 80)),
-        "dedupe_by_memory_id": bool(vector.get("dedupe_by_memory_id", True)),
         "title_match_boost": float(vector.get("title_match_boost", 0.05)),
     }
 
@@ -113,8 +112,6 @@ def _keyword_settings(config_path: str | Path) -> dict:
         "chunk_overlap": int(keyword.get("chunk_overlap", 80)),
         "bm25_k1": float(keyword.get("bm25_k1", 1.5)),
         "bm25_b": float(keyword.get("bm25_b", 0.75)),
-        "ngram_fallback_enabled": bool(keyword.get("ngram_fallback_enabled", False)),
-        "ngram_size": int(keyword.get("ngram_size", 2)),
     }
 
 
@@ -197,25 +194,14 @@ def _ensure_jieba(config_path: str | Path | None = None):
     return jieba
 
 
-def _keyword_char_ngrams(token: str, size: int) -> list[str]:
-    if size <= 0 or len(token) < size:
-        return []
-    return [token[index : index + size] for index in range(0, len(token) - size + 1)]
-
-
 def _keyword_terms(
     text: str,
     stopwords: set[str] | None = None,
     config_path: str | Path | None = None,
-    allow_ngram_fallback: bool | None = None,
 ) -> list[str]:
     if not text:
         return []
     jieba = _ensure_jieba(config_path)
-    settings = _keyword_settings(config_path) if config_path is not None else {}
-    if allow_ngram_fallback is None:
-        allow_ngram_fallback = bool(settings.get("ngram_fallback_enabled", False))
-    ngram_size = int(settings.get("ngram_size", 2))
     stopwords = stopwords or set()
     terms = []
     for match in re.finditer(r"[A-Za-z0-9_]+|[\u4e00-\u9fff]+", text.lower()):
@@ -229,10 +215,7 @@ def _keyword_terms(
             term = segment.strip().lower()
             if len(term) > 1 and term not in stopwords:
                 chinese_terms.append(term)
-        if chinese_terms:
-            terms.extend(chinese_terms)
-        elif allow_ngram_fallback:
-            terms.extend(gram for gram in _keyword_char_ngrams(token, ngram_size) if gram not in stopwords)
+        terms.extend(chinese_terms)
     return terms
 
 ## 把json字符串解析成python对象
@@ -737,6 +720,19 @@ def _candidate_key(candidate: dict, dedupe_by_memory_id: bool) -> str:
     return f"chunk::{candidate.get('chunk_id') or memory_id or id(candidate)}"
 
 
+def _dedupe_source_candidates(candidates: list[dict]) -> list[dict]:
+    """Keep only the highest-ranked chunk for each memory within one retrieval source."""
+    deduped = []
+    seen = set()
+    for candidate in candidates:
+        key = candidate.get("memory_id") or candidate.get("chunk_id") or id(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append({**candidate, "rank": len(deduped) + 1})
+    return deduped
+
+
 def _title_match_bonus(title: str | None, query_terms: list[str], boost: float) -> float:
     if not title or not query_terms or boost <= 0:
         return 0.0
@@ -1126,16 +1122,6 @@ def _vector_memory_candidates(
             }
         )
     candidates.sort(key=lambda item: item["source_scores"]["vector_rerank"], reverse=True)
-    if settings["dedupe_by_memory_id"]:
-        deduped = []
-        seen = set()
-        for candidate in candidates:
-            key = candidate.get("memory_id") or candidate.get("chunk_id")
-            if key in seen:
-                continue
-            seen.add(key)
-            deduped.append(candidate)
-        candidates = deduped
     for rank, candidate in enumerate(candidates, start=1):
         candidate["rank"] = rank
     return candidates[: settings["candidate_k"]], [], query_terms
@@ -1184,6 +1170,9 @@ def _fuse_retrieval_candidates(
     config_path: str,
 ) -> list[dict]:
     settings = _fusion_settings(config_path)
+    if settings["dedupe_by_memory_id"]:
+        keyword_candidates = _dedupe_source_candidates(keyword_candidates)
+        vector_candidates = _dedupe_source_candidates(vector_candidates)
     if not settings["enabled"]:
         combined = keyword_candidates + vector_candidates
         combined.sort(key=lambda item: (item.get("rank", 10**9), item.get("source", "")))
